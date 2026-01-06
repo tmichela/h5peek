@@ -56,6 +56,9 @@ fn main() -> Result<()> {
     };
 
     if args.pager && !args.no_pager {
+        if std::env::var("LESSCHARSET").is_err() {
+            std::env::set_var("LESSCHARSET", "utf-8");
+        }
         pager::Pager::new().setup();
     }
 
