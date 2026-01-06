@@ -1,0 +1,125 @@
+use clap::{Parser, ArgAction};
+use std::path::PathBuf;
+use anyhow::{Result, Context};
+use std::process::exit;
+
+
+mod tree;
+mod dataset;
+mod utils;
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// HDF5 file to view
+    #[arg(required = true)]
+    file: PathBuf,
+
+    /// Object to show within the file, or '-' to prompt for a name
+    path: Option<String>,
+
+    /// Show attributes of groups
+    #[arg(long)]
+    attrs: bool,
+
+    /// Use a pager to display output if it is too long
+    #[arg(long, default_value_t = true)]
+    pager: bool,
+
+    /// Disable pager
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_pager: bool,
+
+    /// Show group children only up to a certain depth, all by default.
+    #[arg(short, long)]
+    depth: Option<usize>,
+
+    /// Select part of a dataset to examine, using Python slicing syntax
+    #[arg(short, long)]
+    slice: Option<String>,
+}
+
+fn main() -> Result<()> {
+    let args = Args::parse();
+    
+    if !args.file.exists() {
+        eprintln!("Not a file: {:?}", args.file);
+        exit(2);
+    }
+
+    let file = hdf5::File::open(&args.file).context("Failed to open HDF5 file")?;
+
+    let path_str = match args.path.as_deref() {
+        Some("-") => prompt_for_path(&args.file)?,
+        Some(p) => p.to_string(),
+        None => "/".to_string(),
+    };
+
+    if args.pager && !args.no_pager {
+        pager::Pager::new().setup();
+    }
+
+    if let Ok(group) = file.group(&path_str) {
+        if args.slice.is_some() {
+             eprintln!("Slicing is only allowed for datasets");
+             exit(1);
+        }
+        
+        let root_name = if path_str == "/" {
+            format!("{}", args.file.display())
+        } else {
+            format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
+        };
+        
+        tree::print_group_tree(&group, &root_name, args.attrs, args.depth)?;
+        
+    } else if let Ok(ds) = file.dataset(&path_str) {
+        let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
+        println!("{}", root_name);
+        dataset::print_dataset_info(&ds, args.slice.as_deref())?;
+    } else {
+        eprintln!("Object not found or type not supported: {}", path_str);
+        exit(1);
+    }
+
+    Ok(())
+}
+
+fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
+    use rustyline::error::ReadlineError;
+    use rustyline::Editor;
+    
+    let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
+    
+    println!("Interactive mode for {}", file_path.display());
+    
+    loop {
+        let readline = rl.readline(&format!("Object path: {}/", file_path.display()));
+        match readline {
+            Ok(line) => {
+                let line = line.trim();
+                if line.is_empty() { continue; }
+                
+                if let Ok(file) = hdf5::File::open(file_path) {
+                     if file.link_exists(line) {
+                         return Ok(line.to_string());
+                     } else {
+                         println!("No object at '{}'", line);
+                     }
+                }
+            },
+            Err(ReadlineError::Interrupted) => {
+                println!("CTRL-C");
+                exit(0);
+            },
+            Err(ReadlineError::Eof) => {
+                println!("CTRL-D");
+                exit(0);
+            },
+            Err(err) => {
+                println!("Error: {:?}", err);
+                exit(1);
+            }
+        }
+    }
+}
