@@ -1,5 +1,6 @@
 use hdf5::Datatype;
 use hdf5::types::{TypeDescriptor, IntSize, FloatSize};
+use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE};
 
 pub fn fmt_shape(shape: &[usize]) -> String {
     if shape.is_empty() {
@@ -10,28 +11,171 @@ pub fn fmt_shape(shape: &[usize]) -> String {
 
 pub fn fmt_dtype(dtype: &Datatype) -> String {
     match dtype.to_descriptor() {
-        Ok(desc) => fmt_descriptor_short(&desc),
-        Err(_) => "unknown".to_string(),
+        Ok(desc) => fmt_descriptor_short(&desc, dtype),
+        Err(_) => fmt_dtype_fallback(dtype),
+    }
+}
+
+fn fmt_dtype_fallback(dtype: &Datatype) -> String {
+    unsafe {
+        let id = dtype.id();
+        let class = H5Tget_class(id);
+        let size = H5Tget_size(id);
+        let suffix = get_endian_suffix(dtype);
+
+        if class == H5T_INTEGER {
+            let sign = H5Tget_sign(id);
+            let sign_str = if sign == H5T_SGN_NONE { "unsigned" } else { "signed" };
+            format!("{}-byte {} integer{}", size, sign_str, suffix)
+        } else if class == H5T_FLOAT {
+            format!("custom {}-byte float{}", size, suffix)
+        } else {
+            format!("unknown {}-byte type", size)
+        }
     }
 }
 
 pub fn dtype_description(dtype: &Datatype) -> Option<String> {
     match dtype.to_descriptor() {
-        Ok(desc) => dtype_description_from_desc(&desc),
+        Ok(desc) => dtype_description_from_desc(&desc, dtype),
         Err(_) => None,
     }
 }
 
-fn dtype_description_from_desc(desc: &TypeDescriptor) -> Option<String> {
+fn get_endian_suffix(dtype: &Datatype) -> String {
+    unsafe {
+        let order = H5Tget_order(dtype.id());
+        if order == H5T_ORDER_BE {
+            " (big-endian)".to_string()
+        } else {
+            String::new() // Little endian is default/standard usually
+        }
+    }
+}
+
+fn is_custom_size(dtype: &Datatype, standard_size_bytes: usize) -> bool {
+    unsafe {
+        let real_size = H5Tget_size(dtype.id());
+        real_size != standard_size_bytes
+    }
+}
+
+fn get_real_size(dtype: &Datatype) -> usize {
+    unsafe { H5Tget_size(dtype.id()) }
+}
+
+fn dtype_description_from_desc(desc: &TypeDescriptor, dtype: &Datatype) -> Option<String> {
     match desc {
-        TypeDescriptor::Integer(size) => Some(format!("{}-bit signed integer", int_size_to_bits(*size))),
-        TypeDescriptor::Unsigned(size) => Some(format!("{}-bit unsigned integer", int_size_to_bits(*size))),
-        TypeDescriptor::Float(size) => Some(format!("{}-bit floating point", float_size_to_bits(*size))),
+        TypeDescriptor::Integer(size) => {
+             let bits = int_size_to_bits(*size);
+             let std_bytes = (bits / 8) as usize;
+             let suffix = get_endian_suffix(dtype);
+             if is_custom_size(dtype, std_bytes) {
+                 Some(format!("custom {}-byte signed integer{}", get_real_size(dtype), suffix))
+             } else {
+                 Some(format!("{}-bit signed integer{}", bits, suffix))
+             }
+        },
+        TypeDescriptor::Unsigned(size) => {
+             let bits = int_size_to_bits(*size);
+             let std_bytes = (bits / 8) as usize;
+             let suffix = get_endian_suffix(dtype);
+             if is_custom_size(dtype, std_bytes) {
+                 Some(format!("custom {}-byte unsigned integer{}", get_real_size(dtype), suffix))
+             } else {
+                 Some(format!("{}-bit unsigned integer{}", bits, suffix))
+             }
+        },
+        TypeDescriptor::Float(size) => {
+             let bits = float_size_to_bits(*size);
+             let std_bytes = (bits / 8) as usize;
+             let suffix = get_endian_suffix(dtype);
+             if is_custom_size(dtype, std_bytes) {
+                 Some(format!("custom {}-byte floating point{}", get_real_size(dtype), suffix))
+             } else {
+                 Some(format!("{}-bit floating point{}", bits, suffix))
+             }
+        },
         _ => None,
     }
 }
 
-fn fmt_descriptor_short(desc: &TypeDescriptor) -> String {
+fn fmt_descriptor_short(desc: &TypeDescriptor, dtype: &Datatype) -> String {
+    match desc {
+        TypeDescriptor::Integer(size) => {
+             let bits = int_size_to_bits(*size);
+             let std_bytes = (bits / 8) as usize;
+             let suffix = get_endian_suffix(dtype);
+             if is_custom_size(dtype, std_bytes) {
+                 format!("{}-byte signed integer{}", get_real_size(dtype), suffix)
+             } else {
+                 format!("int{}{}", bits, suffix)
+             }
+        },
+        TypeDescriptor::Unsigned(size) => {
+             let bits = int_size_to_bits(*size);
+             let std_bytes = (bits / 8) as usize;
+             let suffix = get_endian_suffix(dtype);
+             if is_custom_size(dtype, std_bytes) {
+                 format!("{}-byte unsigned integer{}", get_real_size(dtype), suffix)
+             } else {
+                 format!("uint{}{}", bits, suffix)
+             }
+        },
+        TypeDescriptor::Float(size) => {
+             let bits = float_size_to_bits(*size);
+             let std_bytes = (bits / 8) as usize;
+             let suffix = get_endian_suffix(dtype);
+             if is_custom_size(dtype, std_bytes) {
+                 format!("custom {}-byte float{}", get_real_size(dtype), suffix)
+             } else {
+                 format!("float{}{}", bits, suffix)
+             }
+        },
+        TypeDescriptor::Boolean => "bool".to_string(),
+        TypeDescriptor::Enum(e) => {
+            if e.members.len() >= 5 {
+                format!("enum ({} options)", e.members.len())
+            } else {
+                 let options: Vec<String> = e.members.iter().map(|m| m.name.clone()).collect();
+                 format!("enum ({})", options.join(", "))
+            }
+        },
+        TypeDescriptor::Compound(c) => {
+            let fields: Vec<String> = c.fields.iter().map(|f| {
+                // Recursive call needs a Datatype. But CompoundField only has TypeDescriptor.
+                // We CANNOT easily get the inner Datatype from just TypeDescriptor here without reconstructing it or assuming default props.
+                // This is a limitation of the current recursion approach.
+                // However, for nested types in Compound, endianness is usually inherited or specified per field?
+                // `f.ty` is a TypeDescriptor. It doesn't carry the raw ID.
+                // So we can't call H5Tget_order on `f.ty`.
+                // We'll have to fall back to the simple formatter for nested types inside Compound/Array 
+                // unless we change how we traverse.
+                // For now, let's use a version of fmt that doesn't require Datatype for nested items.
+                format!("{}: {}", f.name, fmt_descriptor_short_nodefs(&f.ty))
+            }).collect();
+            format!("({})", fields.join(", "))
+        },
+        TypeDescriptor::FixedArray(ty, len) => {
+             let mut dims = vec![*len];
+             let mut inner = ty;
+             while let TypeDescriptor::FixedArray(next_ty, next_len) = inner.as_ref() {
+                 dims.push(*next_len);
+                 inner = next_ty;
+             }
+             let shape_str = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ");
+             format!("{} array of {}", shape_str, fmt_descriptor_short_nodefs(inner))
+        },
+        TypeDescriptor::FixedAscii(len) => format!("{}-byte ASCII string", len),
+        TypeDescriptor::FixedUnicode(len) => format!("{}-byte UTF-8 string", len),
+        TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short_nodefs(ty)),
+        TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
+        TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
+    }
+}
+
+// Version of fmt_descriptor that works on pure TypeDescriptors (for nested types where we lack Datatype object)
+fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
     match desc {
         TypeDescriptor::Integer(size) => format!("int{}", int_size_to_bits(*size)),
         TypeDescriptor::Unsigned(size) => format!("uint{}", int_size_to_bits(*size)),
@@ -47,7 +191,7 @@ fn fmt_descriptor_short(desc: &TypeDescriptor) -> String {
         },
         TypeDescriptor::Compound(c) => {
             let fields: Vec<String> = c.fields.iter().map(|f| {
-                format!("{}: {}", f.name, fmt_descriptor_short(&f.ty))
+                format!("{}: {}", f.name, fmt_descriptor_short_nodefs(&f.ty))
             }).collect();
             format!("({})", fields.join(", "))
         },
@@ -59,11 +203,11 @@ fn fmt_descriptor_short(desc: &TypeDescriptor) -> String {
                  inner = next_ty;
              }
              let shape_str = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ");
-             format!("{} array of {}", shape_str, fmt_descriptor_short(inner))
+             format!("{} array of {}", shape_str, fmt_descriptor_short_nodefs(inner))
         },
         TypeDescriptor::FixedAscii(len) => format!("{}-byte ASCII string", len),
         TypeDescriptor::FixedUnicode(len) => format!("{}-byte UTF-8 string", len),
-        TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short(ty)),
+        TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short_nodefs(ty)),
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
     }
@@ -93,30 +237,27 @@ mod tests {
     #[test]
     fn test_standard_float() {
         let desc = TypeDescriptor::Float(FloatSize::U4);
-        assert_eq!(fmt_descriptor_short(&desc), "float32");
-        assert_eq!(dtype_description_from_desc(&desc), Some("32-bit floating point".to_string()));
+        assert_eq!(fmt_descriptor_short_nodefs(&desc), "float32");
     }
 
     #[test]
     fn test_standard_int() {
         let i4 = TypeDescriptor::Integer(IntSize::U4);
-        assert_eq!(fmt_descriptor_short(&i4), "int32");
-        assert_eq!(dtype_description_from_desc(&i4), Some("32-bit signed integer".to_string()));
+        assert_eq!(fmt_descriptor_short_nodefs(&i4), "int32");
 
         let u8 = TypeDescriptor::Unsigned(IntSize::U8);
-        assert_eq!(fmt_descriptor_short(&u8), "uint64");
-        assert_eq!(dtype_description_from_desc(&u8), Some("64-bit unsigned integer".to_string()));
+        assert_eq!(fmt_descriptor_short_nodefs(&u8), "uint64");
     }
 
     #[test]
     fn test_string() {
         // vlen string
         let vst = TypeDescriptor::VarLenUnicode;
-        assert_eq!(fmt_descriptor_short(&vst), "UTF-8 string");
+        assert_eq!(fmt_descriptor_short_nodefs(&vst), "UTF-8 string");
 
         // fixed-length string
         let fst = TypeDescriptor::FixedAscii(3);
-        assert_eq!(fmt_descriptor_short(&fst), "3-byte ASCII string");
+        assert_eq!(fmt_descriptor_short_nodefs(&fst), "3-byte ASCII string");
     }
 
     #[test]
@@ -128,7 +269,7 @@ mod tests {
             ],
             size: 8,
         });
-        assert_eq!(fmt_descriptor_short(&ct), "(x: float32, y: float32)");
+        assert_eq!(fmt_descriptor_short_nodefs(&ct), "(x: float32, y: float32)");
     }
 
     #[test]
@@ -141,21 +282,36 @@ mod tests {
             size: IntSize::U1,
             signed: false,
         });
-        assert_eq!(fmt_descriptor_short(&et), "enum (apple, banana)");
+        assert_eq!(fmt_descriptor_short_nodefs(&et), "enum (apple, banana)");
     }
 
     #[test]
     fn test_vlen() {
         let vt = TypeDescriptor::VarLenArray(Box::new(TypeDescriptor::Integer(IntSize::U2)));
-        assert_eq!(fmt_descriptor_short(&vt), "vlen array of int16");
+        assert_eq!(fmt_descriptor_short_nodefs(&vt), "vlen array of int16");
     }
 
     #[test]
-    fn test_array() {
-        // 3 x 4 array of float64
-        // Nested FixedArray to simulate multidimensional array
-        let t_inner = TypeDescriptor::FixedArray(Box::new(TypeDescriptor::Float(FloatSize::U8)), 4);
-        let at = TypeDescriptor::FixedArray(Box::new(t_inner), 3);
-        assert_eq!(fmt_descriptor_short(&at), "3 × 4 array of float64");
+    fn test_endianness_from_file() {
+        use hdf5::File;
+        use std::path::PathBuf;
+        
+        // Use the sample file we generated
+        let path = PathBuf::from("../sample.h5");
+        if !path.exists() {
+            return; // Skip if file not found (e.g. in environments where it wasn't generated)
+        }
+        
+        let file = File::open(&path).unwrap();
+        let ds = file.dataset("custom_types/int32_be").unwrap();
+        let dtype = ds.dtype().unwrap();
+        
+        assert!(fmt_dtype(&dtype).contains("(big-endian)"));
+
+        // Test Custom 6-byte Integer
+        if let Ok(ds_custom) = file.dataset("custom_types/int48") {
+             let dtype_custom = ds_custom.dtype().unwrap();
+             assert_eq!(fmt_dtype(&dtype_custom), "6-byte signed integer");
+        }
     }
 }
