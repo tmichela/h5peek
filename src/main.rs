@@ -1,6 +1,7 @@
 use clap::{Parser, ArgAction};
 use std::path::PathBuf;
 use anyhow::{Result, Context};
+use std::io::IsTerminal;
 use std::process::exit;
 
 
@@ -55,11 +56,17 @@ fn main() -> Result<()> {
         None => "/".to_string(),
     };
 
-    if args.pager && !args.no_pager {
+    if args.pager && !args.no_pager && std::io::stdout().is_terminal() {
         if std::env::var("LESSCHARSET").is_err() {
             std::env::set_var("LESSCHARSET", "utf-8");
         }
+        // Ensure less handles colors by default if PAGER is not set
+        if std::env::var("PAGER").is_err() {
+            std::env::set_var("PAGER", "less -R");
+        }
         pager::Pager::new().setup();
+        // Force colors on because pager might make is_a_tty false for the process
+        colored::control::set_override(true);
     }
 
     if let Ok(group) = file.group(&path_str) {
