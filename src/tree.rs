@@ -2,9 +2,11 @@ use hdf5::{Group, Dataset};
 use colored::Colorize;
 use crate::utils;
 use anyhow::Result;
+use std::collections::HashMap;
 
 pub fn print_group_tree(group: &Group, name: &str, expand_attrs: bool, max_depth: Option<usize>) -> Result<()> {
-    print_node_impl(Node::Group(group.clone()), name, "", true, 0, expand_attrs, max_depth)
+    let mut visited = HashMap::new();
+    print_node_impl(Node::Group(group.clone()), name, "", true, 0, expand_attrs, max_depth, &mut visited)
 }
 
 enum Node {
@@ -12,9 +14,33 @@ enum Node {
     Dataset(Dataset),
 }
 
-fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>) -> Result<()> {
+fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>, visited: &mut HashMap<u64, String>) -> Result<()> {
     let connector = if depth == 0 { "" } else if is_last { "└" } else { "├" };
     
+    // Check for visited (Hard Link cycle detection)
+    // We need the ID of the object.
+    let (obj_id, full_path) = match &node {
+        Node::Group(g) => (g.id(), g.name()),
+        Node::Dataset(d) => (d.id(), d.name()),
+    };
+
+    let addr = utils::get_object_addr(obj_id).unwrap_or(0); // If fails (0), we just don't dedup, or risk infinite loop? 0 is likely invalid addr.
+
+    // If we have seen this address before, prints reference
+    if addr != 0 && visited.contains_key(&addr) {
+        let first_path = visited.get(&addr).unwrap();
+        let display_name = match &node {
+             Node::Group(_) => name.bright_blue().to_string(),
+             Node::Dataset(_) => name.bold().to_string(),
+        };
+        println!("{}{}{} \t= {}", prefix, connector, display_name, first_path);
+        return Ok(());
+    }
+
+    if addr != 0 {
+        visited.insert(addr, full_path);
+    }
+
     let (display_name, info, n_attrs) = match &node {
         Node::Group(g) => {
              let dname = name.bright_blue().to_string();
@@ -63,6 +89,20 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
             for (i, member_name) in members.iter().enumerate() {
                 let is_last_child = i == n_members - 1;
                 
+                match utils::get_link_info(g.id(), member_name) {
+                    utils::LinkInfo::Soft(target) => {
+                        let connector = if is_last_child { "└" } else { "├" };
+                        println!("{}{}{} -> {}", child_prefix, connector, member_name.bright_magenta(), target);
+                        continue;
+                    },
+                    utils::LinkInfo::External { file, path } => {
+                        let connector = if is_last_child { "└" } else { "├" };
+                        println!("{}{}{} -> {}/{}", child_prefix, connector, member_name.bright_magenta(), file, path);
+                        continue;
+                    },
+                    _ => {}
+                }
+
                 let child_node = if let Ok(cg) = g.group(member_name) {
                     Node::Group(cg)
                 } else if let Ok(cd) = g.dataset(member_name) {
@@ -71,7 +111,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
                     continue; 
                 };
                 
-                print_node_impl(child_node, member_name, &child_prefix, is_last_child, depth + 1, expand_attrs, max_depth)?;
+                print_node_impl(child_node, member_name, &child_prefix, is_last_child, depth + 1, expand_attrs, max_depth, visited)?;
             }
         }
     }

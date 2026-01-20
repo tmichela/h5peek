@@ -1,6 +1,78 @@
 use hdf5::Datatype;
 use hdf5::types::{TypeDescriptor, IntSize, FloatSize};
 use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE};
+use hdf5_sys::h5l::{H5Lget_info1, H5Lget_val, H5L_info1_t, H5L_TYPE_SOFT, H5L_TYPE_EXTERNAL, H5L_TYPE_HARD};
+use hdf5_sys::h5p::H5P_DEFAULT;
+use std::ffi::CString;
+
+#[allow(deprecated)]
+pub fn get_object_addr(loc_id: i64) -> Option<u64> {
+    use hdf5_sys::h5o::{H5Oget_info1, H5O_info1_t};
+    unsafe {
+        let mut info: H5O_info1_t = std::mem::zeroed();
+        if H5Oget_info1(loc_id, &mut info) >= 0 {
+            Some(info.addr)
+        } else {
+            None
+        }
+    }
+}
+
+pub enum LinkInfo {
+    Hard,
+    Soft(String),
+    External { file: String, path: String },
+    Other,
+}
+
+pub fn get_link_info(loc_id: i64, name: &str) -> LinkInfo {
+    let c_name = match CString::new(name) {
+        Ok(c) => c,
+        Err(_) => return LinkInfo::Other,
+    };
+
+    unsafe {
+        let mut info: H5L_info1_t = std::mem::zeroed();
+        let err = H5Lget_info1(loc_id, c_name.as_ptr(), &mut info, H5P_DEFAULT);
+        if err < 0 {
+            return LinkInfo::Other;
+        }
+
+        match info.type_ {
+            H5L_TYPE_HARD => LinkInfo::Hard,
+            H5L_TYPE_SOFT => {
+                let size = *info.u.val_size();
+                let mut buf: Vec<u8> = vec![0; size + 1];
+                H5Lget_val(loc_id, c_name.as_ptr(), buf.as_mut_ptr() as *mut _, size, H5P_DEFAULT);
+                // Remove trailing nulls/garbage if any, CString::from_vec_with_nul handles one null.
+                // The buf size from val_size usually includes null terminator for soft links?
+                // Or we can just parse up to first null.
+                let s = parse_null_terminated(&buf);
+                LinkInfo::Soft(s)
+            },
+            H5L_TYPE_EXTERNAL => {
+                let size = *info.u.val_size();
+                let mut buf: Vec<u8> = vec![0; size + 1];
+                H5Lget_val(loc_id, c_name.as_ptr(), buf.as_mut_ptr() as *mut _, size, H5P_DEFAULT);
+                
+                // External link value: filename \0 path \0
+                let full = buf;
+                let mut parts = full.split(|&b| b == 0).filter(|p| !p.is_empty());
+                let file = parts.next().map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
+                let path = parts.next().map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
+                LinkInfo::External { file, path }
+            },
+            _ => LinkInfo::Other,
+        }
+    }
+}
+
+fn parse_null_terminated(buf: &[u8]) -> String {
+    buf.iter()
+        .position(|&b| b == 0)
+        .map(|pos| String::from_utf8_lossy(&buf[..pos]).into_owned())
+        .unwrap_or_else(|| String::from_utf8_lossy(buf).into_owned())
+}
 
 pub fn fmt_shape(shape: &[usize]) -> String {
     if shape.is_empty() {
@@ -35,6 +107,7 @@ fn fmt_dtype_fallback(dtype: &Datatype) -> String {
     }
 }
 
+#[allow(dead_code)]
 pub fn dtype_description(dtype: &Datatype) -> Option<String> {
     match dtype.to_descriptor() {
         Ok(desc) => dtype_description_from_desc(&desc, dtype),
@@ -64,6 +137,7 @@ fn get_real_size(dtype: &Datatype) -> usize {
     unsafe { H5Tget_size(dtype.id()) }
 }
 
+#[allow(dead_code)]
 fn dtype_description_from_desc(desc: &TypeDescriptor, dtype: &Datatype) -> Option<String> {
     match desc {
         TypeDescriptor::Integer(size) => {
