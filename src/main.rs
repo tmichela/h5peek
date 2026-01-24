@@ -8,6 +8,7 @@ use std::process::exit;
 mod tree;
 mod dataset;
 mod utils;
+mod completer;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -98,8 +99,16 @@ fn main() -> Result<()> {
 fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
     use rustyline::error::ReadlineError;
     use rustyline::Editor;
+    use rustyline::config::Config;
+    use crate::completer::H5Completer;
     
-    let mut rl = Editor::<(), rustyline::history::DefaultHistory>::new()?;
+    let config = Config::builder()
+        .completion_type(rustyline::CompletionType::List)
+        .build();
+        
+    let h5_completer = H5Completer::new(file_path.clone());
+    let mut rl = Editor::<H5Completer, rustyline::history::DefaultHistory>::with_config(config)?;
+    rl.set_helper(Some(h5_completer));
     
     println!("Interactive mode for {}", file_path.display());
     
@@ -111,8 +120,14 @@ fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
                 if line.is_empty() { continue; }
                 
                 if let Ok(file) = hdf5::File::open(file_path) {
-                     if file.link_exists(line) {
-                         return Ok(line.to_string());
+                     let path_to_check = if line.starts_with('/') {
+                         line.to_string()
+                     } else {
+                         format!("/{}", line)
+                     };
+
+                     if file.link_exists(&path_to_check) {
+                         return Ok(path_to_check);
                      } else {
                          println!("No object at '{}'", line);
                      }
