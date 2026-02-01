@@ -1,7 +1,6 @@
 use hdf5::Datatype;
 use hdf5::types::{TypeDescriptor, IntSize, FloatSize};
 use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE};
-use hdf5_sys::h5l::{H5Lget_info1, H5Lget_val, H5L_info1_t, H5L_TYPE_SOFT, H5L_TYPE_EXTERNAL, H5L_TYPE_HARD};
 use hdf5_sys::h5p::H5P_DEFAULT;
 use std::ffi::CString;
 
@@ -25,7 +24,10 @@ pub enum LinkInfo {
     Other,
 }
 
+#[allow(deprecated)]
 pub fn get_link_info(loc_id: i64, name: &str) -> LinkInfo {
+    use hdf5_sys::h5l::{H5Lget_info1, H5Lget_val, H5L_info1_t, H5L_TYPE_SOFT, H5L_TYPE_EXTERNAL, H5L_TYPE_HARD};
+
     let c_name = match CString::new(name) {
         Ok(c) => c,
         Err(_) => return LinkInfo::Other,
@@ -170,6 +172,11 @@ fn dtype_description_from_desc(desc: &TypeDescriptor, dtype: &Datatype) -> Optio
                  Some(format!("{}-bit floating point{}", bits, suffix))
              }
         },
+        TypeDescriptor::Reference(r) => Some(match r {
+            hdf5::types::Reference::Object => "object reference".to_string(),
+            hdf5::types::Reference::Region => "region reference".to_string(),
+            _ => "reference".to_string(),
+        }),
         _ => None,
     }
 }
@@ -245,6 +252,11 @@ fn fmt_descriptor_short(desc: &TypeDescriptor, dtype: &Datatype) -> String {
         TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short_nodefs(ty)),
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
+        TypeDescriptor::Reference(r) => match r {
+            hdf5::types::Reference::Object => "obj-ref".to_string(),
+            hdf5::types::Reference::Region => "reg-ref".to_string(),
+            _ => "ref".to_string(),
+        },
     }
 }
 
@@ -284,6 +296,11 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
         TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short_nodefs(ty)),
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
+        TypeDescriptor::Reference(r) => match r {
+            hdf5::types::Reference::Object => "obj-ref".to_string(),
+            hdf5::types::Reference::Region => "reg-ref".to_string(),
+            _ => "ref".to_string(),
+        },
     }
 }
 
