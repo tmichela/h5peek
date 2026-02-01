@@ -1,15 +1,28 @@
 [package]
-name = "h5glance-rs"
+name = "h5peek"
 version = "0.1.0"
 edition = "2021"
+description = "A CLI tool for inspecting HDF5 file structures and metadata with colored output."
+license = "BSD-3-Clause"
+repository = "https://github.com/european-XFEL/h5glance" 
+readme = "README.md"
+keywords = ["hdf5", "cli", "visualization", "inspect", "data"]
+categories = ["command-line-utilities", "visualization", "science"]
+exclude = ["/.gitignore"]
 
 [dependencies]
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 colored = "3.0.0"
-hdf5 = "0.8.1"
-hdf5-sys = "0.8.1"
+#hdf5 = "0.8.1"
+hdf5 = { package = "hdf5-metno", version = "0.12.1" }
+#hdf5-sys = "0.8.1"
+hdf5-sys = { package = "hdf5-metno-sys", version = "0.11.1" }
 ndarray = "0.15.6"
 pager = "0.16.1"
 regex = "1.12.2"
 rustyline = "17.0.2"
+
+[[bin]]
+name = "h5peek"
+path = "src/main.rs"
