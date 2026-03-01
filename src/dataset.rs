@@ -1,10 +1,18 @@
-use hdf5::{Dataset, H5Type, Selection};
+use hdf5::{Dataset, Dataspace, H5Type, Selection};
 use hdf5::plist::dataset_create::Layout;
-use hdf5::types::{TypeDescriptor, VarLenUnicode};
+use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode};
+use hdf5::types::dyn_value::DynCompound;
 use crate::utils;
 use crate::slicing;
-use anyhow::Result;
-use ndarray::{IxDyn, ArrayD};
+use anyhow::{anyhow, Result};
+use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
+use hdf5_sys::h5d::H5Dread;
+use hdf5_sys::h5p::H5P_DEFAULT;
+
+const MAX_ARRAY_ELEMS: usize = 200;
+const ARRAY_EDGE: usize = 3;
+const MAX_COMPOUND_ROWS: usize = 20;
+const COMPOUND_EDGE: usize = 5;
 
 pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>) -> Result<()> {
     println!("      dtype: {}", utils::fmt_dtype(&ds.dtype()?));
@@ -67,12 +75,13 @@ fn print_selection_data(ds: &Dataset, selection: Selection) -> Result<()> {
     let dtype = ds.dtype()?;
     let desc = dtype.to_descriptor()?;
 
-    match desc {
+    match &desc {
         TypeDescriptor::Integer(_) => print_selection::<i64>(ds, selection),
         TypeDescriptor::Unsigned(_) => print_selection::<u64>(ds, selection),
         TypeDescriptor::Float(_) => print_selection::<f64>(ds, selection),
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
         TypeDescriptor::VarLenUnicode | TypeDescriptor::FixedUnicode(_) | TypeDescriptor::FixedAscii(_) | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
+        TypeDescriptor::Compound(compound) => print_selection_compound(ds, selection, compound),
         _ => {
             println!("(data type not supported for display)");
             Ok(())
@@ -85,14 +94,76 @@ where T: H5Type + std::fmt::Debug
 {
     // Use read_slice which handles multi-dim selections correctly in hdf5-metno
     let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
-    println!("{:?}", arr);
+    println!("{}", format_array_with_ellipsis(&arr));
     Ok(())
 }
 
 fn print_selection_string(ds: &Dataset, selection: Selection) -> Result<()> {
     let arr: ArrayD<VarLenUnicode> = ds.read_slice::<VarLenUnicode, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v: &VarLenUnicode| v.as_str().to_string());
-    println!("{:?}", s_arr);
+    println!("{}", format_array_with_ellipsis(&s_arr));
+    Ok(())
+}
+
+fn print_selection_compound(ds: &Dataset, selection: Selection, compound: &CompoundType) -> Result<()> {
+    if compound_has_vlen(compound) {
+        println!("(compound data with variable-length fields is not supported for display)");
+        return Ok(());
+    }
+
+    let dtype = ds.dtype()?;
+    let obj_space = ds.space()?;
+    let out_shape = selection.out_shape(obj_space.shape())?;
+    let out_size: usize = out_shape.iter().product();
+    if out_size == 0 {
+        println!("[]");
+        return Ok(());
+    }
+
+    let fspace = obj_space.select(selection)?;
+    let mspace = Dataspace::try_new(&out_shape)?;
+    let elem_size = dtype.size();
+    let mut buf = vec![0u8; out_size * elem_size];
+
+    let status = unsafe {
+        H5Dread(
+            ds.id(),
+            dtype.id(),
+            mspace.id(),
+            fspace.id(),
+            H5P_DEFAULT,
+            buf.as_mut_ptr().cast(),
+        )
+    };
+    if status < 0 {
+        return Err(anyhow!("Error reading compound data"));
+    }
+
+    let include_index = out_shape.len() > 1;
+    let mut headers: Vec<String> = Vec::new();
+    if include_index {
+        headers.push("idx".to_string());
+    }
+    headers.extend(compound.fields.iter().map(|f| f.name.clone()));
+
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(out_size);
+    for elem_idx in 0..out_size {
+        let offset = elem_idx * elem_size;
+        let elem_buf = &buf[offset..offset + elem_size];
+        let value = DynCompound::new(compound, elem_buf);
+        let mut row: Vec<String> = Vec::with_capacity(headers.len());
+        if include_index {
+            row.push(format_index(elem_idx, &out_shape));
+        }
+        for (_, field_val) in value.iter() {
+            row.push(format!("{:?}", field_val));
+        }
+        rows.push(row);
+    }
+
+    let rows = truncate_rows(&rows, COMPOUND_EDGE, MAX_COMPOUND_ROWS);
+    let table = format_aligned_table(&headers, &rows);
+    println!("{}", table);
     Ok(())
 }
 
@@ -141,4 +212,175 @@ fn print_sample_data(ds: &Dataset) -> Result<()> {
     }
 
     print_selection_data(ds, Selection::new(..))
+}
+
+fn format_array_with_ellipsis<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {
+    if arr.is_empty() {
+        return "[]".to_string();
+    }
+    let needs_ellipsis = arr.len() > MAX_ARRAY_ELEMS
+        || arr.shape().iter().any(|&d| d > ARRAY_EDGE * 2);
+    if !needs_ellipsis {
+        return format!("{:?}", arr);
+    }
+    format_array_view_with_ellipsis(arr.view(), ARRAY_EDGE)
+}
+
+#[derive(Clone, Copy)]
+enum AxisItem {
+    Index(usize),
+    Ellipsis,
+}
+
+fn axis_indices(len: usize, edge: usize) -> Vec<AxisItem> {
+    if len <= edge * 2 {
+        return (0..len).map(AxisItem::Index).collect();
+    }
+    let mut out = Vec::with_capacity(edge * 2 + 1);
+    for i in 0..edge {
+        out.push(AxisItem::Index(i));
+    }
+    out.push(AxisItem::Ellipsis);
+    for i in (len - edge)..len {
+        out.push(AxisItem::Index(i));
+    }
+    out
+}
+
+fn format_array_view_with_ellipsis<T: std::fmt::Debug>(view: ArrayViewD<T>, edge: usize) -> String {
+    match view.ndim() {
+        0 => format!("{:?}", view.first().unwrap()),
+        1 => {
+            let mut parts = Vec::new();
+            for item in axis_indices(view.shape()[0], edge) {
+                match item {
+                    AxisItem::Index(i) => {
+                        let v = view.index_axis(Axis(0), i);
+                        parts.push(format!("{:?}", v.first().unwrap()));
+                    }
+                    AxisItem::Ellipsis => parts.push("...".to_string()),
+                }
+            }
+            format!("[{}]", parts.join(", "))
+        }
+        _ => {
+            let mut parts = Vec::new();
+            for item in axis_indices(view.shape()[0], edge) {
+                match item {
+                    AxisItem::Index(i) => {
+                        let v = view.index_axis(Axis(0), i);
+                        parts.push(format_array_view_with_ellipsis(v.into_dyn(), edge));
+                    }
+                    AxisItem::Ellipsis => parts.push("...".to_string()),
+                }
+            }
+            format!("[{}]", parts.join(", "))
+        }
+    }
+}
+
+fn compound_has_vlen(compound: &CompoundType) -> bool {
+    compound.fields.iter().any(|field| descriptor_has_vlen(&field.ty))
+}
+
+fn descriptor_has_vlen(desc: &TypeDescriptor) -> bool {
+    match desc {
+        TypeDescriptor::VarLenArray(_) | TypeDescriptor::VarLenAscii | TypeDescriptor::VarLenUnicode => true,
+        TypeDescriptor::FixedArray(inner, _) => descriptor_has_vlen(inner),
+        TypeDescriptor::Compound(compound) => compound.fields.iter().any(|field| descriptor_has_vlen(&field.ty)),
+        _ => false,
+    }
+}
+
+fn format_index(flat: usize, shape: &[usize]) -> String {
+    if shape.is_empty() {
+        return "()".to_string();
+    }
+    let mut idx = vec![0usize; shape.len()];
+    let mut rem = flat;
+    for (pos, dim) in shape.iter().rev().enumerate() {
+        let i = shape.len() - 1 - pos;
+        let d = *dim;
+        if d == 0 {
+            idx[i] = 0;
+        } else {
+            idx[i] = rem % d;
+            rem /= d;
+        }
+    }
+    format!("({})", idx.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
+}
+
+fn truncate_rows(rows: &[Vec<String>], edge: usize, max_rows: usize) -> Vec<Vec<String>> {
+    if rows.len() <= max_rows || rows.len() <= edge * 2 {
+        return rows.to_vec();
+    }
+    let mut out = Vec::new();
+    out.extend_from_slice(&rows[..edge]);
+    out.push(vec!["...".to_string(); rows[0].len()]);
+    out.extend_from_slice(&rows[rows.len() - edge..]);
+    out
+}
+
+fn format_aligned_table(headers: &[String], rows: &[Vec<String>]) -> String {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i >= widths.len() {
+                widths.push(cell.len());
+            } else if cell.len() > widths[i] {
+                widths[i] = cell.len();
+            }
+        }
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push(format_row(headers, &widths));
+    let sep: Vec<String> = widths.iter().map(|w| "-".repeat(*w)).collect();
+    lines.push(format_row(&sep, &widths));
+    for row in rows {
+        lines.push(format_row(row, &widths));
+    }
+    lines.join("\n")
+}
+
+fn format_row(cells: &[String], widths: &[usize]) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(cells.len());
+    for (cell, width) in cells.iter().zip(widths.iter()) {
+        parts.push(format!("{:<width$}", cell, width = *width));
+    }
+    parts.join("  ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ndarray::array;
+
+    #[test]
+    fn format_array_with_ellipsis_small_matches_debug() {
+        let arr = array![[1, 2], [3, 4]].into_dyn();
+        assert_eq!(format_array_with_ellipsis(&arr), format!("{:?}", arr));
+    }
+
+    #[test]
+    fn format_array_with_ellipsis_large_includes_ellipsis() {
+        let arr = ArrayD::from_shape_vec(IxDyn(&[1, 10]), (0..10).collect()).unwrap();
+        let formatted = format_array_with_ellipsis(&arr);
+        assert!(formatted.contains("..."));
+    }
+
+    #[test]
+    fn format_aligned_table_pads_columns() {
+        let headers = vec!["a".to_string(), "bb".to_string()];
+        let rows = vec![
+            vec!["1".to_string(), "22".to_string()],
+            vec!["333".to_string(), "4".to_string()],
+        ];
+        let table = format_aligned_table(&headers, &rows);
+        let lines: Vec<&str> = table.lines().collect();
+        assert!(lines[0].contains("a"));
+        assert!(lines[0].contains("bb"));
+        assert_eq!(lines.len(), 4);
+    }
 }
