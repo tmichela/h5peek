@@ -40,6 +40,10 @@ struct Args {
     /// Select part of a dataset to examine, using Python slicing syntax
     #[arg(short, long)]
     slice: Option<String>,
+
+    /// Filter displayed paths using a Unix-like glob pattern (can be used multiple times)
+    #[arg(short, long, action = ArgAction::Append)]
+    filter: Vec<String>,
 }
 
 fn main() -> Result<()> {
@@ -71,6 +75,12 @@ fn main() -> Result<()> {
         colored::control::set_override(true);
     }
 
+    let filter = if args.filter.is_empty() {
+        None
+    } else {
+        Some(tree::PathFilter::new(&args.filter)?)
+    };
+
     if let Ok(group) = file.group(&path_str) {
         if args.slice.is_some() {
              eprintln!("Slicing is only allowed for datasets");
@@ -83,9 +93,18 @@ fn main() -> Result<()> {
             format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
         };
         
-        tree::print_group_tree(&group, &root_name, args.attrs, args.depth)?;
+        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, filter.as_ref())?;
+        if !printed && filter.is_some() {
+            eprintln!("No paths matched the filter");
+        }
         
     } else if let Ok(ds) = file.dataset(&path_str) {
+        if let Some(filter) = filter.as_ref() {
+            if !filter.is_match(&ds.name()) {
+                eprintln!("No paths matched the filter");
+                return Ok(());
+            }
+        }
         let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
         println!("{}", root_name);
         dataset::print_dataset_info(&ds, args.slice.as_deref())?;
