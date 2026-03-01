@@ -2,34 +2,41 @@ use hdf5::{Group, Dataset};
 use colored::Colorize;
 use crate::utils;
 use anyhow::{anyhow, Result};
-use regex::Regex;
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::collections::{HashMap, HashSet};
 
 pub struct PathFilter {
-    patterns: Vec<Regex>,
+    set: GlobSet,
+    substrings: Vec<String>,
 }
 
 impl PathFilter {
     pub fn new(patterns: &[String]) -> Result<Self> {
-        let mut compiled = Vec::new();
+        let mut builder = GlobSetBuilder::new();
+        let mut substrings = Vec::new();
         for pattern in patterns {
-            if !has_glob_meta(pattern) {
-                let regex = Regex::new(&format!(".*{}.*", regex::escape(pattern)))
-                    .map_err(|e| anyhow!("Invalid filter pattern '{}': {}", pattern, e))?;
-                compiled.push(regex);
+            let normalized = if has_glob_meta(pattern) {
+                normalize_pattern(pattern)
+            } else {
+                substrings.push(pattern.clone());
                 continue;
-            }
-
-            let normalized = normalize_pattern(pattern);
-            let regex = glob_to_regex(&normalized)
+            };
+            let glob = GlobBuilder::new(&normalized)
+                .literal_separator(true)
+                .backslash_escape(true)
+                .build()
                 .map_err(|e| anyhow!("Invalid filter pattern '{}': {}", pattern, e))?;
-            compiled.push(regex);
+            builder.add(glob);
         }
-        Ok(Self { patterns: compiled })
+        let set = builder.build().map_err(|e| anyhow!("Invalid filter patterns: {}", e))?;
+        Ok(Self { set, substrings })
     }
 
     pub fn is_match(&self, path: &str) -> bool {
-        self.patterns.iter().any(|re| re.is_match(path))
+        if self.substrings.iter().any(|needle| path.contains(needle)) {
+            return true;
+        }
+        self.set.is_match(path)
     }
 }
 
@@ -48,48 +55,11 @@ fn has_glob_meta(pattern: &str) -> bool {
             '\\' => {
                 chars.next();
             }
-            '*' | '?' => return true,
+            '*' | '?' | '[' | ']' | '{' | '}' => return true,
             _ => {}
         }
     }
     false
-}
-
-fn glob_to_regex(pattern: &str) -> Result<Regex> {
-    let mut out = String::from("^");
-    let mut chars = pattern.chars().peekable();
-    while let Some(ch) = chars.next() {
-        match ch {
-            '*' => {
-                if matches!(chars.peek(), Some('*')) {
-                    chars.next();
-                    if matches!(chars.peek(), Some('/')) {
-                        chars.next();
-                        out.push_str("(?:.*/)?");
-                    } else {
-                        out.push_str(".*");
-                    }
-                } else {
-                    out.push_str("[^/]*");
-                }
-            }
-            '?' => out.push_str("[^/]"),
-            '\\' => {
-                if let Some(next) = chars.next() {
-                    out.push_str(&regex::escape(&next.to_string()));
-                } else {
-                    out.push_str("\\\\");
-                }
-            }
-            '.' | '+' | '(' | ')' | '|' | '^' | '$' | '{' | '}' | '[' | ']' => {
-                out.push('\\');
-                out.push(ch);
-            }
-            _ => out.push(ch),
-        }
-    }
-    out.push('$');
-    Ok(Regex::new(&out)?)
 }
 
 pub fn print_group_tree(group: &Group, name: &str, expand_attrs: bool, max_depth: Option<usize>, filter: Option<&PathFilter>) -> Result<bool> {
@@ -368,6 +338,13 @@ mod tests {
         assert!(filter.is_match("/entry/metadata"));
         assert!(filter.is_match("/entry/foo/data/bar"));
         assert!(!filter.is_match("/entry/other"));
+    }
+
+    #[test]
+    fn path_filter_plain_string_with_leading_slash_is_substring() {
+        let filter = PathFilter::new(&vec!["/entry/data".to_string()]).unwrap();
+        assert!(filter.is_match("/entry/data"));
+        assert!(filter.is_match("/foo/entry/data"));
     }
 
     #[test]
