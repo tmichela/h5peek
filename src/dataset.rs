@@ -15,12 +15,45 @@ const MAX_COMPOUND_ROWS: usize = 20;
 const COMPOUND_EDGE: usize = 5;
 
 pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>) -> Result<()> {
-    println!("      dtype: {}", utils::fmt_dtype(&ds.dtype()?));
-    println!("      shape: {}", utils::fmt_shape(&ds.shape()));
+    let dtype = ds.dtype()?;
+    let desc = dtype.to_descriptor().ok();
+    let shape = ds.shape();
+    println!("      dtype: {}", utils::fmt_dtype(&dtype));
+    println!("      shape: {}", utils::fmt_shape(&shape));
+
+    let elem_count = if shape.is_empty() {
+        Some(1u64)
+    } else {
+        shape.iter().try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
+    };
+    match elem_count {
+        Some(count) => println!("   elements: {}", count),
+        None => println!("   elements: (too large)"),
+    }
+
+    let storage_bytes = ds.storage_size();
+    println!("    storage: {}", utils::fmt_bytes(storage_bytes));
+
+    if let Some(desc) = desc {
+        if !descriptor_has_vlen(&desc) {
+            match elem_count.and_then(|count| count.checked_mul(dtype.size() as u64)) {
+                Some(logical_bytes) => {
+                    println!("logical size: {}", utils::fmt_bytes(logical_bytes));
+                    if storage_bytes > 0 && logical_bytes > 0 {
+                        let ratio = logical_bytes as f64 / storage_bytes as f64;
+                        println!("compression ratio: {:.2}x", ratio);
+                    }
+                }
+                None => println!("logical size: (too large)"),
+            }
+        } else {
+            println!("logical size: (variable-length)");
+        }
+    }
     
     if let Ok(space) = ds.space() {
         let maxshape = space.maxdims();
-        let current_shape = ds.shape();
+        let current_shape = &shape;
         let different = maxshape.len() != current_shape.len() || 
                         maxshape.iter().zip(current_shape.iter()).any(|(m, s)| m.map_or(true, |mv| mv != *s));
         

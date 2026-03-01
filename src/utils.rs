@@ -83,6 +83,24 @@ pub fn fmt_shape(shape: &[usize]) -> String {
     shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" × ")
 }
 
+pub fn fmt_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 6] = ["B", "KiB", "MiB", "GiB", "TiB", "PiB"];
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+
+    if unit == 0 {
+        format!("{} B", bytes)
+    } else if value >= 10.0 {
+        format!("{:.0} {}", value, UNITS[unit])
+    } else {
+        format!("{:.1} {}", value, UNITS[unit])
+    }
+}
+
 pub fn fmt_maxshape(shape: &[Option<usize>]) -> String {
     if shape.is_empty() {
         return "scalar".to_string();
@@ -484,6 +502,15 @@ mod tests {
              let dtype_custom = ds_custom.dtype().unwrap();
              assert_eq!(fmt_dtype(&dtype_custom), "6-byte signed integer");
         }
+    }
+
+    #[test]
+    fn test_fmt_bytes() {
+        assert_eq!(fmt_bytes(0), "0 B");
+        assert_eq!(fmt_bytes(512), "512 B");
+        assert_eq!(fmt_bytes(1024), "1.0 KiB");
+        assert_eq!(fmt_bytes(10 * 1024), "10 KiB");
+        assert_eq!(fmt_bytes(1536), "1.5 KiB");
     }
 
     #[test]
