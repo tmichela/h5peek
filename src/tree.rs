@@ -126,9 +126,8 @@ fn print_attrs(obj: &hdf5::Location, prefix: &str) -> Result<()> {
      
      for name in attrs {
          let attr = obj.attr(&name)?;
-         let shape = utils::fmt_shape(&attr.shape());
-         let dtype = utils::fmt_dtype(&attr.dtype()?);
-         println!("{}│  {}: {} [{}]", prefix, name, dtype, shape);
+         let value = utils::format_attribute_value(&attr);
+         println!("{}│  {}: {}", prefix, name, value);
      }
      Ok(())
 }

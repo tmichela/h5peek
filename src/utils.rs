@@ -1,5 +1,5 @@
 use hdf5::Datatype;
-use hdf5::types::{TypeDescriptor, IntSize, FloatSize};
+use hdf5::types::{TypeDescriptor, IntSize, FloatSize, VarLenUnicode};
 use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE};
 use hdf5_sys::h5p::H5P_DEFAULT;
 use std::ffi::CString;
@@ -314,6 +314,74 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
     }
 }
 
+pub fn format_attribute_value(attr: &hdf5::Attribute) -> String {
+    let dtype = match attr.dtype() {
+        Ok(dt) => dt,
+        Err(_) => return "unreadable".to_string(),
+    };
+    let desc = match dtype.to_descriptor() {
+        Ok(d) => d,
+        Err(_) => return format!("[{}]", fmt_dtype(&dtype)),
+    };
+
+    let shape = attr.shape();
+    if !shape.is_empty() {
+        return format!("array [{}: {}]", fmt_dtype(&dtype), fmt_shape(&shape));
+    }
+
+    match desc {
+        TypeDescriptor::Integer(_) => attr.read_scalar::<i64>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Unsigned(_) => attr.read_scalar::<u64>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Float(_) => attr.read_scalar::<f64>().map(|v| format!("{:.5}", v)).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Boolean => attr.read_scalar::<bool>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::VarLenUnicode | TypeDescriptor::FixedUnicode(_) | TypeDescriptor::FixedAscii(_) | TypeDescriptor::VarLenAscii => {
+            attr.read_scalar::<VarLenUnicode>().map(|v| {
+                let s = v.as_str().to_string();
+                if s.len() > 50 {
+                    let head = utf8_prefix_by_bytes(&s, 20);
+                    let tail = utf8_suffix_by_bytes(&s, 20);
+                    format!("{}...{}", head, tail)
+                } else {
+                    format!("'{}'", s)
+                }
+            }).unwrap_or_else(|_| "unreadable".to_string())
+        },
+        _ => format!("[{}]", fmt_dtype(&dtype)),
+    }
+}
+
+fn utf8_prefix_by_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+
+    let mut end = 0;
+    for (idx, ch) in s.char_indices() {
+        let next = idx + ch.len_utf8();
+        if next > max_bytes {
+            break;
+        }
+        end = next;
+    }
+
+    &s[..end]
+}
+
+fn utf8_suffix_by_bytes(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+
+    let target = s.len() - max_bytes;
+    for (idx, _) in s.char_indices() {
+        if idx >= target {
+            return &s[idx..];
+        }
+    }
+
+    s
+}
+
 fn int_size_to_bits(size: IntSize) -> u32 {
     match size {
         IntSize::U1 => 8,
@@ -333,7 +401,9 @@ fn float_size_to_bits(size: FloatSize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hdf5::types::{EnumType, CompoundType, CompoundField};
+    use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode};
+    use std::str::FromStr;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn test_standard_float() {
@@ -414,5 +484,29 @@ mod tests {
              let dtype_custom = ds_custom.dtype().unwrap();
              assert_eq!(fmt_dtype(&dtype_custom), "6-byte signed integer");
         }
+    }
+
+    #[test]
+    fn test_format_attribute_value_utf8_truncation_safe() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_utf8_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file.new_attr::<VarLenUnicode>().shape(()).create("utf8_attr").unwrap();
+
+        let unit = "\u{00E9}";
+        let long = unit.repeat(60);
+        let v = VarLenUnicode::from_str(&long).unwrap();
+        attr.as_writer().write_scalar(&v).unwrap();
+
+        let formatted = format_attribute_value(&attr);
+        let expected = format!("{}...{}", unit.repeat(10), unit.repeat(10));
+        assert_eq!(formatted, expected);
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
     }
 }

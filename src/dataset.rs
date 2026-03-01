@@ -54,6 +54,12 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>) -> Result<()> 
             print_sample_data(ds)?;
     }
 
+    let attr_names = ds.attr_names()?;
+    println!("\n{} attributes:", attr_names.len());
+    for name in attr_names {
+        let attr = ds.attr(&name)?;
+        println!("* {}: {}", name, utils::format_attribute_value(&attr));
+    }
     Ok(())
 }
 
