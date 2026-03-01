@@ -56,7 +56,7 @@ pub fn get_link_info(loc_id: i64, name: &str) -> LinkInfo {
                 let size = *info.u.val_size();
                 let mut buf: Vec<u8> = vec![0; size + 1];
                 H5Lget_val(loc_id, c_name.as_ptr(), buf.as_mut_ptr() as *mut _, size, H5P_DEFAULT);
-                
+
                 // External link value: filename \0 path \0
                 let full = buf;
                 let mut parts = full.split(|&b| b == 0).filter(|p| !p.is_empty());
@@ -81,6 +81,16 @@ pub fn fmt_shape(shape: &[usize]) -> String {
         return "scalar".to_string();
     }
     shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" × ")
+}
+
+pub fn fmt_maxshape(shape: &[Option<usize>]) -> String {
+    if shape.is_empty() {
+        return "scalar".to_string();
+    }
+    shape.iter().map(|s| match s {
+        Some(v) => v.to_string(),
+        None => "unlimited".to_string(),
+    }).collect::<Vec<_>>().join(" × ")
 }
 
 pub fn fmt_dtype(dtype: &Datatype) -> String {

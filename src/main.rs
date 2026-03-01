@@ -9,6 +9,7 @@ mod tree;
 mod dataset;
 mod utils;
 mod completer;
+mod slicing;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
