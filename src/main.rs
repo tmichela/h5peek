@@ -44,6 +44,18 @@ struct Args {
     /// Filter displayed paths using a Unix-like glob pattern (can be used multiple times)
     #[arg(short, long, action = ArgAction::Append)]
     filter: Vec<String>,
+
+    /// Float precision for display
+    #[arg(long, default_value_t = 5)]
+    precision: usize,
+
+    /// Use scientific notation for floats
+    #[arg(long, action = ArgAction::SetTrue)]
+    scientific: bool,
+
+    /// Disable thousands separators in numeric output
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_grouping: bool,
 }
 
 fn main() -> Result<()> {
@@ -75,6 +87,13 @@ fn main() -> Result<()> {
         colored::control::set_override(true);
     }
 
+    let array_format = utils::NumFormat {
+        precision: args.precision,
+        scientific: args.scientific,
+        group_thousands: !args.no_grouping,
+    };
+    let scalar_format = utils::NumFormat::scalar(!args.no_grouping);
+
     let filter = if args.filter.is_empty() {
         None
     } else {
@@ -93,7 +112,7 @@ fn main() -> Result<()> {
             format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
         };
         
-        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, filter.as_ref())?;
+        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, filter.as_ref(), &scalar_format)?;
         if !printed && filter.is_some() {
             eprintln!("No paths matched the filter");
         }
@@ -107,7 +126,7 @@ fn main() -> Result<()> {
         }
         let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
         println!("{}", root_name);
-        dataset::print_dataset_info(&ds, args.slice.as_deref())?;
+        dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format)?;
     } else {
         eprintln!("Object not found or type not supported: {}", path_str);
         exit(1);

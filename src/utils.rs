@@ -4,6 +4,32 @@ use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_OR
 use hdf5_sys::h5p::H5P_DEFAULT;
 use std::ffi::CString;
 
+#[derive(Clone, Copy, Debug)]
+pub struct NumFormat {
+    pub precision: usize,
+    pub scientific: bool,
+    pub group_thousands: bool,
+}
+
+impl Default for NumFormat {
+    fn default() -> Self {
+        Self {
+            precision: 5,
+            scientific: false,
+            group_thousands: true,
+        }
+    }
+}
+
+impl NumFormat {
+    pub fn scalar(group_thousands: bool) -> Self {
+        Self {
+            precision: usize::MAX,
+            scientific: false,
+            group_thousands,
+        }
+    }
+}
 #[allow(deprecated)]
 pub fn get_object_addr(loc_id: i64) -> Option<u64> {
     use hdf5_sys::h5o::{H5Oget_info1, H5O_info1_t};
@@ -99,6 +125,80 @@ pub fn fmt_bytes(bytes: u64) -> String {
     } else {
         format!("{:.1} {}", value, UNITS[unit])
     }
+}
+
+pub fn fmt_i64(value: i64, fmt: &NumFormat) -> String {
+    if fmt.group_thousands {
+        let negative = value < 0;
+        let mut n = value as i128;
+        if negative {
+            n = -n;
+        }
+        let grouped = group_digits(&n.to_string());
+        if negative {
+            format!("-{}", grouped)
+        } else {
+            grouped
+        }
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn fmt_u64(value: u64, fmt: &NumFormat) -> String {
+    if fmt.group_thousands {
+        group_digits(&value.to_string())
+    } else {
+        value.to_string()
+    }
+}
+
+pub fn fmt_f64(value: f64, fmt: &NumFormat) -> String {
+    if !value.is_finite() {
+        return value.to_string();
+    }
+    if fmt.precision == usize::MAX && !fmt.scientific {
+        return value.to_string();
+    }
+    if fmt.scientific {
+        return format!("{:.*e}", fmt.precision, value);
+    }
+    let raw = format!("{:.*}", fmt.precision, value);
+    if !fmt.group_thousands {
+        return raw;
+    }
+
+    let (sign, rest) = match raw.strip_prefix('-') {
+        Some(r) => ("-", r),
+        None => ("", raw.as_str()),
+    };
+    let mut split = rest.splitn(2, '.');
+    let int_part = split.next().unwrap_or("");
+    let frac_part = split.next();
+    let grouped = group_digits(int_part);
+    match frac_part {
+        Some(frac) => format!("{}{}.{}", sign, grouped, frac),
+        None => format!("{}{}", sign, grouped),
+    }
+}
+
+fn group_digits(digits: &str) -> String {
+    if digits.len() <= 3 {
+        return digits.to_string();
+    }
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    let mut first = digits.len() % 3;
+    if first == 0 {
+        first = 3;
+    }
+    out.push_str(&digits[..first]);
+    let mut i = first;
+    while i < digits.len() {
+        out.push(',');
+        out.push_str(&digits[i..i + 3]);
+        i += 3;
+    }
+    out
 }
 
 pub fn fmt_maxshape(shape: &[Option<usize>]) -> String {
@@ -332,7 +432,7 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
     }
 }
 
-pub fn format_attribute_value(attr: &hdf5::Attribute) -> String {
+pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat) -> String {
     let dtype = match attr.dtype() {
         Ok(dt) => dt,
         Err(_) => return "unreadable".to_string(),
@@ -348,9 +448,9 @@ pub fn format_attribute_value(attr: &hdf5::Attribute) -> String {
     }
 
     match desc {
-        TypeDescriptor::Integer(_) => attr.read_scalar::<i64>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
-        TypeDescriptor::Unsigned(_) => attr.read_scalar::<u64>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
-        TypeDescriptor::Float(_) => attr.read_scalar::<f64>().map(|v| format!("{:.5}", v)).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Integer(_) => attr.read_scalar::<i64>().map(|v| fmt_i64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Unsigned(_) => attr.read_scalar::<u64>().map(|v| fmt_u64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Float(_) => attr.read_scalar::<f64>().map(|v| fmt_f64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
         TypeDescriptor::Boolean => attr.read_scalar::<bool>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
         TypeDescriptor::VarLenUnicode | TypeDescriptor::FixedUnicode(_) | TypeDescriptor::FixedAscii(_) | TypeDescriptor::VarLenAscii => {
             attr.read_scalar::<VarLenUnicode>().map(|v| {
@@ -514,6 +614,25 @@ mod tests {
     }
 
     #[test]
+    fn test_number_formatting() {
+        let fmt = NumFormat {
+            precision: 2,
+            scientific: false,
+            group_thousands: true,
+        };
+        assert_eq!(fmt_i64(1234567, &fmt), "1,234,567");
+        assert_eq!(fmt_u64(42, &fmt), "42");
+        assert_eq!(fmt_f64(1234.5, &fmt), "1,234.50");
+
+        let fmt_scientific = NumFormat {
+            precision: 3,
+            scientific: true,
+            group_thousands: true,
+        };
+        assert_eq!(fmt_f64(1234.5, &fmt_scientific), "1.234e3");
+    }
+
+    #[test]
     fn test_format_attribute_value_utf8_truncation_safe() {
         use hdf5::File;
 
@@ -529,7 +648,7 @@ mod tests {
         let v = VarLenUnicode::from_str(&long).unwrap();
         attr.as_writer().write_scalar(&v).unwrap();
 
-        let formatted = format_attribute_value(&attr);
+        let formatted = format_attribute_value(&attr, &NumFormat::default());
         let expected = format!("{}...{}", unit.repeat(10), unit.repeat(10));
         assert_eq!(formatted, expected);
 
