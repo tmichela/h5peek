@@ -40,4 +40,4 @@ h5peek file.h5 --depth 2
 
 ## License
 
-BSD-3-Clause
+MIT

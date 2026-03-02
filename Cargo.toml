@@ -2,9 +2,9 @@
 name = "h5peek"
 version = "0.1.0"
 edition = "2021"
-description = "A CLI tool for inspecting HDF5 file structures and metadata with colored output."
-license = "BSD-3-Clause"
-repository = "https://github.com/european-XFEL/h5glance" 
+description = "A CLI tool for inspecting HDF5 file structures and metadata"
+license = "MIT"
+repository = "https://github.com/tmichela/h5peek"
 readme = "README.md"
 keywords = ["hdf5", "cli", "visualization", "inspect", "data"]
 categories = ["command-line-utilities", "visualization", "science"]
