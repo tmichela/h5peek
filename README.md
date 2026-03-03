@@ -1,6 +1,7 @@
 # h5peek
 
 A command-line tool for inspecting HDF5 files, written in Rust. It provides a colored tree view of the file structure, detailed datatype information, and interactive path completion.
+This started as a re-implementation of the Python [h5glance](https://pypi.org/project/h5glance/) application, but might derive from it in future.
 
 ## Features
 
@@ -36,6 +37,17 @@ h5peek file.h5 --attrs
 
 # Limit depth
 h5peek file.h5 --depth 2
+```
+
+
+## Sample File
+
+```bash
+# Install deps for the generator
+python3 -m pip install h5py numpy
+
+# Generate a sample file for testing
+python3 script/generate_sample.py data/sample.h5
 ```
 
 ## License

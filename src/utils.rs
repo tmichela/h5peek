@@ -586,7 +586,7 @@ mod tests {
         use std::path::PathBuf;
         
         // Use the sample file we generated
-        let path = PathBuf::from("../sample.h5");
+        let path = PathBuf::from("data/sample.h5");
         if !path.exists() {
             return; // Skip if file not found (e.g. in environments where it wasn't generated)
         }
