@@ -242,6 +242,40 @@ fn external_link_formatting_avoids_double_slash() {
 }
 
 #[test]
+fn non_group_or_dataset_object_reports_clear_error() {
+    use hdf5_sys::h5t::{H5Tcopy, H5Tclose, H5Tset_size, H5T_STD_I32LE};
+    use hdf5_sys::h5t::H5Tcommit2;
+    use hdf5_sys::h5p::H5P_DEFAULT;
+    use std::ffi::CString;
+
+    let path = temp_h5_path("named_dtype");
+    let file = hdf5::File::create(&path).unwrap();
+
+    unsafe {
+        let tid = H5Tcopy(*H5T_STD_I32LE);
+        assert!(tid >= 0);
+        assert!(H5Tset_size(tid, 4) >= 0);
+
+        let name = CString::new("named_dtype").unwrap();
+        let status = H5Tcommit2(file.id(), name.as_ptr(), tid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+        assert!(status >= 0);
+
+        H5Tclose(tid);
+    }
+    file.flush().unwrap();
+    drop(file);
+
+    base_cmd()
+        .arg(&path)
+        .arg("/named_dtype")
+        .assert()
+        .failure()
+        .stderr(contains("Object exists but is not a group or dataset: /named_dtype"));
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn custom_int_size_is_handled_gracefully() {
     let path = sample_file_path();
 

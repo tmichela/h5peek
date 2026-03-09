@@ -66,6 +66,10 @@ fn main() -> Result<()> {
     let args = Args::parse();
     
     if !args.file.exists() {
+        eprintln!("File not found: {:?}", args.file);
+        exit(2);
+    }
+    if !args.file.is_file() {
         eprintln!("Not a file: {:?}", args.file);
         exit(2);
     }
@@ -132,7 +136,12 @@ fn main() -> Result<()> {
         println!("{}", root_name);
         dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format)?;
     } else {
-        eprintln!("Object not found or type not supported: {}", path_str);
+        if file.link_exists(&path_str) {
+            eprintln!("Object exists but is not a group or dataset: {}", path_str);
+        } else {
+            eprintln!("Object not found: {}", path_str);
+        }
+        eprintln!("Tip: use 'h5peek {} -' for interactive mode", args.file.display());
         exit(1);
     }
 
