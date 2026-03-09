@@ -174,3 +174,17 @@ fn custom_int_size_is_handled_gracefully() {
         .success()
         .stdout(contains("data display not supported for integer size 6 bytes"));
 }
+
+#[test]
+fn invalid_slice_is_an_error() {
+    let path = sample_file_path();
+
+    base_cmd()
+        .arg(&path)
+        .arg("/arrays_1d/int32")
+        .arg("--slice")
+        .arg("not-a-slice")
+        .assert()
+        .failure()
+        .stderr(contains("Error parsing slice"));
+}

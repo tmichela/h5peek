@@ -39,6 +39,12 @@ h5peek file.h5 --attrs
 h5peek file.h5 --depth 2
 ```
 
+## Error handling
+
+- Metadata always prints for datasets; data previews are best-effort.
+- When `--slice` is provided, slice parsing or read failures exit non-zero and report an error.
+- When `--slice` is not provided, preview failures are printed as warnings and the command continues.
+
 
 ## Sample File
 

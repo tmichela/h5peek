@@ -81,19 +81,17 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
 
     if let Some(expr) = slice_expr {
         println!("\nselected data [{}]:", expr);
-        match slicing::parse_slice(expr, &ds.shape()) {
-            Ok(selection) => {
-            if let Err(e) = print_selection_data(ds, selection, array_fmt) {
-                println!("Error reading sliced data: {}", e);
-            }
-            }
-            Err(e) => println!("Error parsing slice: {}", e),
-        }
+        let selection = slicing::parse_slice(expr, &ds.shape())
+            .map_err(|e| anyhow!("Error parsing slice: {}", e))?;
+        print_selection_data(ds, selection, array_fmt)
+            .map_err(|e| anyhow!("Error reading sliced data: {}", e))?;
     } else if ds.ndim() == 0 {
-            print_scalar(ds, scalar_fmt)?;
+        print_scalar(ds, scalar_fmt)?;
     } else {
-            println!("\nsample data:");
-            print_sample_data(ds, array_fmt)?;
+        println!("\nsample data:");
+        if let Err(e) = print_sample_data(ds, array_fmt) {
+            println!("(error reading sample data: {})", e);
+        }
     }
 
     let attr_names = ds.attr_names()?;
