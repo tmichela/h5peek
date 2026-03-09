@@ -186,6 +186,28 @@ fn default_tree_output_is_sorted() {
 }
 
 #[test]
+fn default_tree_output_uses_natural_sort() {
+    let path = temp_h5_path("natural_sort");
+    {
+        let file = hdf5::File::create(&path).unwrap();
+        let group = file.create_group("root").unwrap();
+        group.new_dataset_builder().with_data(&[1_i32]).create("group_2asdf").unwrap();
+        group.new_dataset_builder().with_data(&[2_i32]).create("group_10asdf").unwrap();
+        group.new_dataset_builder().with_data(&[3_i32]).create("group_1asdf").unwrap();
+        file.flush().unwrap();
+    }
+
+    base_cmd()
+        .arg(&path)
+        .arg("/root")
+        .assert()
+        .success()
+        .stdout(is_match("(?s)group_1asdf.*group_2asdf.*group_10asdf").unwrap());
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
 fn external_link_formatting_avoids_double_slash() {
     let target = temp_h5_path("ext_target");
     let source = temp_h5_path("ext_source");

@@ -4,6 +4,7 @@ use crate::utils;
 use anyhow::{anyhow, Result};
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use std::collections::{HashMap, HashSet};
+use natord::compare;
 
 pub struct PathFilter {
     set: GlobSet,
@@ -107,7 +108,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
         if show_children {
             let mut members = g.member_names()?;
             if sort_members {
-                members.sort();
+                members.sort_by(|a, b| compare(a, b));
             }
             for member_name in members {
                 let child_full_path = join_hdf5_path(&full_path, &member_name);
@@ -291,7 +292,7 @@ fn node_matches_or_descendant(node: &Node, filter: &PathFilter, depth: usize, ma
 
     let mut members = g.member_names()?;
     if sort_members {
-        members.sort();
+        members.sort_by(|a, b| compare(a, b));
     }
     for member_name in members {
         let child_full_path = join_hdf5_path(&full_path, &member_name);
