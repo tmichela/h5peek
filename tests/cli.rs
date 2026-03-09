@@ -345,3 +345,16 @@ fn color_auto_respects_no_color_env() {
         .success()
         .stdout(contains("\u{1b}[").not());
 }
+
+#[test]
+fn tree_output_has_no_tabs() {
+    let path = sample_file_path();
+
+    base_cmd()
+        .arg(&path)
+        .arg("--depth")
+        .arg("2")
+        .assert()
+        .success()
+        .stdout(contains("\t").not());
+}

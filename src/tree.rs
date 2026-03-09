@@ -75,7 +75,7 @@ enum Node {
 }
 
 fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, visited: &mut HashMap<u64, String>, filter: Option<&PathFilter>, filter_guard: &mut HashSet<u64>, force_show: bool, fmt: &utils::NumFormat) -> Result<bool> {
-    let connector = if depth == 0 { "" } else if is_last { "└" } else { "├" };
+    let connector = if depth == 0 { "" } else if is_last { "└ " } else { "├ " };
     
     // Check for visited (Hard Link cycle detection)
     // We need the ID of the object.
@@ -97,7 +97,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
              Node::Group(_) => name.bright_blue().to_string(),
              Node::Dataset(_) => name.bold().to_string(),
         };
-        println!("{}{}{} \t= {}", prefix, connector, display_name, first_path);
+        println!("{}{}{}  = {}", prefix, connector, display_name, first_path);
         return Ok(true);
     }
 
@@ -173,7 +173,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
              
              if !show_children {
                  let n = g.member_names()?.len();
-                 info = format!("\t({} children)", n);
+                 info = format!(" ({0} children)", n);
              }
              (dname, info, n_attrs)
         },
@@ -181,7 +181,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
              let dname = name.bold().to_string();
              let dtype = utils::fmt_dtype(&ds.dtype()?);
              let shape = utils::fmt_shape(&ds.shape());
-             let info = format!("\t[{}: {}]", dtype, shape);
+             let info = format!(" [{0}: {1}]", dtype, shape);
              let n_attrs = ds.attr_names()?.len();
              (dname, info, n_attrs)
         }
