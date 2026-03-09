@@ -1,5 +1,6 @@
 use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
+use predicates::prelude::*;
 use predicates::str::{contains, is_match};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -161,6 +162,61 @@ fn fixed_length_string_array_is_displayed() {
         .stdout(contains("beta"));
 
     let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn default_tree_output_is_sorted() {
+    let path = temp_h5_path("sorted_tree");
+    {
+        let file = hdf5::File::create(&path).unwrap();
+        let group = file.create_group("root").unwrap();
+        group.new_dataset_builder().with_data(&[1_i32]).create("zz_b").unwrap();
+        group.new_dataset_builder().with_data(&[2_i32]).create("aa_a").unwrap();
+        file.flush().unwrap();
+    }
+
+    base_cmd()
+        .arg(&path)
+        .arg("/root")
+        .assert()
+        .success()
+        .stdout(is_match("(?s)aa_a.*zz_b").unwrap());
+
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn external_link_formatting_avoids_double_slash() {
+    let target = temp_h5_path("ext_target");
+    let source = temp_h5_path("ext_source");
+
+    {
+        let file = hdf5::File::create(&target).unwrap();
+        let group = file.create_group("g").unwrap();
+        group.new_dataset_builder().with_data(&[1_i32]).create("d").unwrap();
+        file.flush().unwrap();
+    }
+
+    {
+        let file = hdf5::File::create(&source).unwrap();
+        let group = file.create_group("links").unwrap();
+        group.link_external(target.to_str().unwrap(), "/g/d", "ext_d").unwrap();
+        file.flush().unwrap();
+    }
+
+    let expected = format!("{}{}", target.display(), "/g/d");
+    let double = format!("{}//g/d", target.display());
+
+    base_cmd()
+        .arg(&source)
+        .arg("/links")
+        .assert()
+        .success()
+        .stdout(contains(expected))
+        .stdout(contains(double).not());
+
+    let _ = std::fs::remove_file(source);
+    let _ = std::fs::remove_file(target);
 }
 
 #[test]

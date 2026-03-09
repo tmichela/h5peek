@@ -37,6 +37,9 @@ h5peek file.h5 --attrs
 
 # Limit depth
 h5peek file.h5 --depth 2
+
+# Preserve original (unsorted) member order
+h5peek file.h5 --unsorted
 ```
 
 ## Error handling

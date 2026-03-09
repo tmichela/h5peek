@@ -62,10 +62,10 @@ fn has_glob_meta(pattern: &str) -> bool {
     false
 }
 
-pub fn print_group_tree(group: &Group, name: &str, expand_attrs: bool, max_depth: Option<usize>, filter: Option<&PathFilter>, fmt: &utils::NumFormat) -> Result<bool> {
+pub fn print_group_tree(group: &Group, name: &str, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, filter: Option<&PathFilter>, fmt: &utils::NumFormat) -> Result<bool> {
     let mut visited = HashMap::new();
     let mut filter_guard = HashSet::new();
-    print_node_impl(Node::Group(group.clone()), name, "", true, 0, expand_attrs, max_depth, &mut visited, filter, &mut filter_guard, false, fmt)
+    print_node_impl(Node::Group(group.clone()), name, "", true, 0, expand_attrs, max_depth, sort_members, &mut visited, filter, &mut filter_guard, false, fmt)
 }
 
 enum Node {
@@ -73,7 +73,7 @@ enum Node {
     Dataset(Dataset),
 }
 
-fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>, visited: &mut HashMap<u64, String>, filter: Option<&PathFilter>, filter_guard: &mut HashSet<u64>, force_show: bool, fmt: &utils::NumFormat) -> Result<bool> {
+fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, visited: &mut HashMap<u64, String>, filter: Option<&PathFilter>, filter_guard: &mut HashSet<u64>, force_show: bool, fmt: &utils::NumFormat) -> Result<bool> {
     let connector = if depth == 0 { "" } else if is_last { "└" } else { "├" };
     
     // Check for visited (Hard Link cycle detection)
@@ -105,7 +105,10 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
     let mut child_entries: Vec<ChildEntry> = Vec::new();
     if let Node::Group(g) = &node {
         if show_children {
-            let members = g.member_names()?;
+            let mut members = g.member_names()?;
+            if sort_members {
+                members.sort();
+            }
             for member_name in members {
                 let child_full_path = join_hdf5_path(&full_path, &member_name);
                 match utils::get_link_info(g.id(), &member_name) {
@@ -135,7 +138,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
                 let child_should_print = if show_all_children {
                     true
                 } else if let Some(filter) = filter {
-                    node_matches_or_descendant(&child_node, filter, depth + 1, max_depth, filter_guard)?
+                    node_matches_or_descendant(&child_node, filter, depth + 1, max_depth, sort_members, filter_guard)?
                 } else {
                     true
                 };
@@ -214,11 +217,16 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
                     },
                     ChildEntry::External { name: member_name, file, path } => {
                         let connector = if is_last_child { "└" } else { "├" };
-                        println!("{}{}{} -> {}/{}", child_prefix, connector, member_name.bright_magenta(), file, path);
+                        let display_target = if path.starts_with('/') {
+                            format!("{}{}", file, path)
+                        } else {
+                            format!("{}/{}", file, path)
+                        };
+                        println!("{}{}{} -> {}", child_prefix, connector, member_name.bright_magenta(), display_target);
                         continue;
                     },
                     ChildEntry::Node { name: member_name, node: child_node } => {
-                        print_node_impl(child_node, &member_name, &child_prefix, is_last_child, depth + 1, expand_attrs, max_depth, visited, filter, filter_guard, show_all_children, fmt)?;
+                        print_node_impl(child_node, &member_name, &child_prefix, is_last_child, depth + 1, expand_attrs, max_depth, sort_members, visited, filter, filter_guard, show_all_children, fmt)?;
                     }
                 };
             }
@@ -255,7 +263,7 @@ enum ChildEntry {
     External { name: String, file: String, path: String },
 }
 
-fn node_matches_or_descendant(node: &Node, filter: &PathFilter, depth: usize, max_depth: Option<usize>, guard: &mut HashSet<u64>) -> Result<bool> {
+fn node_matches_or_descendant(node: &Node, filter: &PathFilter, depth: usize, max_depth: Option<usize>, sort_members: bool, guard: &mut HashSet<u64>) -> Result<bool> {
     let (obj_id, full_path) = match node {
         Node::Group(g) => (g.id(), g.name()),
         Node::Dataset(d) => (d.id(), d.name()),
@@ -281,7 +289,11 @@ fn node_matches_or_descendant(node: &Node, filter: &PathFilter, depth: usize, ma
         guard.insert(addr);
     }
 
-    for member_name in g.member_names()? {
+    let mut members = g.member_names()?;
+    if sort_members {
+        members.sort();
+    }
+    for member_name in members {
         let child_full_path = join_hdf5_path(&full_path, &member_name);
         match utils::get_link_info(g.id(), &member_name) {
             utils::LinkInfo::Soft(_) | utils::LinkInfo::External { .. } => {
@@ -304,7 +316,7 @@ fn node_matches_or_descendant(node: &Node, filter: &PathFilter, depth: usize, ma
             continue;
         };
 
-        if node_matches_or_descendant(&child_node, filter, depth + 1, max_depth, guard)? {
+        if node_matches_or_descendant(&child_node, filter, depth + 1, max_depth, sort_members, guard)? {
             if addr != 0 {
                 guard.remove(&addr);
             }

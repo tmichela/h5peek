@@ -45,6 +45,10 @@ struct Args {
     #[arg(short, long, action = ArgAction::Append)]
     filter: Vec<String>,
 
+    /// Preserve the original (unsorted) HDF5 member order in tree output
+    #[arg(long, action = ArgAction::SetTrue)]
+    unsorted: bool,
+
     /// Float precision for display
     #[arg(long, default_value_t = 5)]
     precision: usize,
@@ -112,7 +116,7 @@ fn main() -> Result<()> {
             format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
         };
         
-        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, filter.as_ref(), &scalar_format)?;
+        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, !args.unsorted, filter.as_ref(), &scalar_format)?;
         if !printed && filter.is_some() {
             eprintln!("No paths matched the filter");
         }
