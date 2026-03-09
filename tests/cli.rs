@@ -24,6 +24,7 @@ fn temp_h5_path(name: &str) -> PathBuf {
     path
 }
 
+
 fn base_cmd() -> Command {
     let mut cmd = cargo_bin_cmd!("h5peek");
     cmd.env("NO_COLOR", "1");

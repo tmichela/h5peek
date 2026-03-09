@@ -282,7 +282,10 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            if let Ok(v) = ds.read_scalar::<i64>() { println!("{}", utils::fmt_i64(v, fmt)); }
+            match ds.read_scalar::<i64>() {
+                Ok(v) => println!("{}", utils::fmt_i64(v, fmt)),
+                Err(e) => println!("(failed to read scalar value: {e})"),
+            }
         },
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -290,24 +293,40 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            if let Ok(v) = ds.read_scalar::<u64>() { println!("{}", utils::fmt_u64(v, fmt)); }
+            match ds.read_scalar::<u64>() {
+                Ok(v) => println!("{}", utils::fmt_u64(v, fmt)),
+                Err(e) => println!("(failed to read scalar value: {e})"),
+            }
         },
         TypeDescriptor::Float(_) => {
-             if let Ok(v) = ds.read_scalar::<f64>() { println!("{}", utils::fmt_f64(v, fmt)); }
+             match ds.read_scalar::<f64>() {
+                 Ok(v) => println!("{}", utils::fmt_f64(v, fmt)),
+                 Err(e) => println!("(failed to read scalar value: {e})"),
+             }
         },
         TypeDescriptor::Boolean => {
-             if let Ok(v) = ds.read_scalar::<bool>() { println!("{}", v); }
+             match ds.read_scalar::<bool>() {
+                 Ok(v) => println!("{}", v),
+                 Err(e) => println!("(failed to read scalar value: {e})"),
+             }
         },
         TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => {
-             if let Ok(v) = ds.read_scalar::<VarLenUnicode>() { println!("{}", v.as_str()); }
+             match ds.read_scalar::<VarLenUnicode>() {
+                 Ok(v) => println!("{}", v.as_str()),
+                 Err(e) => println!("(failed to read scalar value: {e})"),
+             }
         },
         TypeDescriptor::FixedAscii(len) => {
-            let value = read_fixed_string_scalar(ds, len, false)?;
-            println!("{}", value);
+            match read_fixed_string_scalar(ds, len, false) {
+                Ok(value) => println!("{}", value),
+                Err(e) => println!("(failed to read scalar value: {e})"),
+            }
         }
         TypeDescriptor::FixedUnicode(len) => {
-            let value = read_fixed_string_scalar(ds, len, true)?;
-            println!("{}", value);
+            match read_fixed_string_scalar(ds, len, true) {
+                Ok(value) => println!("{}", value),
+                Err(e) => println!("(failed to read scalar value: {e})"),
+            }
         }
         _ => println!("(data type not supported for display)"),
     }
@@ -319,8 +338,8 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
     if shape.is_empty() { return Ok(()); }
 
     // If dataset is very large, take a slice
-    let total_size = shape.iter().product::<usize>();
-    if total_size > 100 {
+    let total_size = total_size_checked(&shape);
+    if total_size.map_or(true, |size| size > 100) {
         // Construct a sample slice string like "0:10, 0:10, ..."
         let mut sample_parts = Vec::new();
         for dim_len in &shape {
@@ -337,6 +356,10 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
 
 fn is_standard_int_size(size: usize) -> bool {
     matches!(size, 1 | 2 | 4 | 8)
+}
+
+fn total_size_checked(shape: &[usize]) -> Option<usize> {
+    shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d))
 }
 
 fn dtype_is_integer(dtype: &hdf5::Datatype) -> bool {
@@ -715,5 +738,11 @@ mod tests {
         let arr = array![["alpha".to_string(), "beta".to_string()]].into_dyn();
         let formatted = format_array_with_ellipsis_display(&arr, true);
         assert!(formatted.contains("\"alpha\""));
+    }
+
+    #[test]
+    fn total_size_checked_overflow_returns_none() {
+        let shape = vec![usize::MAX, 2];
+        assert!(total_size_checked(&shape).is_none());
     }
 }
