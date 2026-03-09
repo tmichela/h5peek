@@ -1,6 +1,6 @@
 use hdf5::{Dataset, Dataspace, H5Type, Selection};
 use hdf5::plist::dataset_create::Layout;
-use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode};
+use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode, IntSize, FloatSize};
 use hdf5::types::dyn_value::DynCompound;
 use crate::utils;
 use crate::slicing;
@@ -8,6 +8,7 @@ use anyhow::{anyhow, Result};
 use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
 use hdf5_sys::h5d::H5Dread;
 use hdf5_sys::h5p::H5P_DEFAULT;
+use hdf5_sys::h5t::{H5Tget_class, H5T_INTEGER};
 
 const MAX_ARRAY_ELEMS: usize = 200;
 const ARRAY_EDGE: usize = 3;
@@ -106,14 +107,41 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
 
 fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat) -> Result<()> {
     let dtype = ds.dtype()?;
-    let desc = dtype.to_descriptor()?;
+    let desc = match dtype.to_descriptor() {
+        Ok(d) => d,
+        Err(_) => {
+            if dtype_is_integer(&dtype) {
+                let size = dtype.size();
+                println!("(data display not supported for integer size {} bytes)", size);
+                return Ok(());
+            }
+            println!("(data type not supported for display)");
+            return Ok(());
+        }
+    };
 
     match &desc {
-        TypeDescriptor::Integer(_) => print_selection_int(ds, selection, fmt),
-        TypeDescriptor::Unsigned(_) => print_selection_uint(ds, selection, fmt),
+        TypeDescriptor::Integer(_) => {
+            let size = dtype.size();
+            if !is_standard_int_size(size) {
+                println!("(data display not supported for integer size {} bytes)", size);
+                return Ok(());
+            }
+            print_selection_int(ds, selection, fmt)
+        }
+        TypeDescriptor::Unsigned(_) => {
+            let size = dtype.size();
+            if !is_standard_int_size(size) {
+                println!("(data display not supported for integer size {} bytes)", size);
+                return Ok(());
+            }
+            print_selection_uint(ds, selection, fmt)
+        }
         TypeDescriptor::Float(_) => print_selection_float(ds, selection, fmt),
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
-        TypeDescriptor::VarLenUnicode | TypeDescriptor::FixedUnicode(_) | TypeDescriptor::FixedAscii(_) | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
+        TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
+        TypeDescriptor::FixedAscii(len) => print_selection_fixed_string(ds, selection, *len, false),
+        TypeDescriptor::FixedUnicode(len) => print_selection_fixed_string(ds, selection, *len, true),
         TypeDescriptor::Compound(compound) => print_selection_compound(ds, selection, compound),
         _ => {
             println!("(data type not supported for display)");
@@ -159,9 +187,19 @@ fn print_selection_string(ds: &Dataset, selection: Selection) -> Result<()> {
     Ok(())
 }
 
+fn print_selection_fixed_string(ds: &Dataset, selection: Selection, len: usize, is_unicode: bool) -> Result<()> {
+    let arr = read_fixed_string_selection(ds, selection, len, is_unicode)?;
+    println!("{}", format_array_with_ellipsis_display(&arr, true));
+    Ok(())
+}
+
 fn print_selection_compound(ds: &Dataset, selection: Selection, compound: &CompoundType) -> Result<()> {
     if compound_has_vlen(compound) {
         println!("(compound data with variable-length fields is not supported for display)");
+        return Ok(());
+    }
+    if !compound_alignment_safe(compound) {
+        println!("(compound data display skipped: unaligned or unsupported layout)");
         return Ok(());
     }
 
@@ -224,13 +262,34 @@ fn print_selection_compound(ds: &Dataset, selection: Selection, compound: &Compo
 fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
     println!("\ndata:");
     let dtype = ds.dtype()?;
-    let desc = dtype.to_descriptor()?;
+    let desc = match dtype.to_descriptor() {
+        Ok(d) => d,
+        Err(_) => {
+            if dtype_is_integer(&dtype) {
+                let size = dtype.size();
+                println!("(data display not supported for integer size {} bytes)", size);
+                return Ok(());
+            }
+            println!("(data type not supported for display)");
+            return Ok(());
+        }
+    };
     
     match desc {
         TypeDescriptor::Integer(_) => {
+            let size = dtype.size();
+            if !is_standard_int_size(size) {
+                println!("(data display not supported for integer size {} bytes)", size);
+                return Ok(());
+            }
             if let Ok(v) = ds.read_scalar::<i64>() { println!("{}", utils::fmt_i64(v, fmt)); }
         },
         TypeDescriptor::Unsigned(_) => {
+            let size = dtype.size();
+            if !is_standard_int_size(size) {
+                println!("(data display not supported for integer size {} bytes)", size);
+                return Ok(());
+            }
             if let Ok(v) = ds.read_scalar::<u64>() { println!("{}", utils::fmt_u64(v, fmt)); }
         },
         TypeDescriptor::Float(_) => {
@@ -239,9 +298,17 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         TypeDescriptor::Boolean => {
              if let Ok(v) = ds.read_scalar::<bool>() { println!("{}", v); }
         },
-        TypeDescriptor::VarLenUnicode | TypeDescriptor::FixedUnicode(_) | TypeDescriptor::FixedAscii(_) | TypeDescriptor::VarLenAscii => {
+        TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => {
              if let Ok(v) = ds.read_scalar::<VarLenUnicode>() { println!("{}", v.as_str()); }
         },
+        TypeDescriptor::FixedAscii(len) => {
+            let value = read_fixed_string_scalar(ds, len, false)?;
+            println!("{}", value);
+        }
+        TypeDescriptor::FixedUnicode(len) => {
+            let value = read_fixed_string_scalar(ds, len, true)?;
+            println!("{}", value);
+        }
         _ => println!("(data type not supported for display)"),
     }
     Ok(())
@@ -266,6 +333,112 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
     }
 
     print_selection_data(ds, Selection::new(..), fmt)
+}
+
+fn is_standard_int_size(size: usize) -> bool {
+    matches!(size, 1 | 2 | 4 | 8)
+}
+
+fn dtype_is_integer(dtype: &hdf5::Datatype) -> bool {
+    unsafe { H5Tget_class(dtype.id()) == H5T_INTEGER }
+}
+
+fn alignment_for_descriptor(desc: &TypeDescriptor) -> Option<usize> {
+    match desc {
+        TypeDescriptor::Integer(size) => int_size_to_bytes(*size),
+        TypeDescriptor::Unsigned(size) => int_size_to_bytes(*size),
+        TypeDescriptor::Float(size) => float_size_to_bytes(*size),
+        TypeDescriptor::Boolean => Some(1),
+        TypeDescriptor::Enum(e) => int_size_to_bytes(e.size),
+        TypeDescriptor::FixedAscii(_) | TypeDescriptor::FixedUnicode(_) => Some(1),
+        TypeDescriptor::VarLenAscii | TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenArray(_) => None,
+        TypeDescriptor::FixedArray(_, _) => None,
+        TypeDescriptor::Compound(_) => None,
+        TypeDescriptor::Reference(_) => None,
+    }
+}
+
+fn int_size_to_bytes(size: IntSize) -> Option<usize> {
+    match size {
+        IntSize::U1 => Some(1),
+        IntSize::U2 => Some(2),
+        IntSize::U4 => Some(4),
+        IntSize::U8 => Some(8),
+    }
+}
+
+fn float_size_to_bytes(size: FloatSize) -> Option<usize> {
+    match size {
+        FloatSize::U4 => Some(4),
+        FloatSize::U8 => Some(8),
+    }
+}
+
+fn compound_alignment_safe(compound: &CompoundType) -> bool {
+    for field in &compound.fields {
+        let align = match alignment_for_descriptor(&field.ty) {
+            Some(a) if a > 0 => a,
+            _ => return false,
+        };
+        // We read into a `Vec<u8>` (alignment 1). To avoid misaligned
+        // dereferences in downstream dynamic parsing, only allow
+        // compounds whose fields have alignment 1.
+        if align != 1 {
+            return false;
+        }
+        if field.offset % align != 0 {
+            return false;
+        }
+    }
+    true
+}
+
+fn read_fixed_string_scalar(ds: &Dataset, len: usize, is_unicode: bool) -> Result<String> {
+    let arr = read_fixed_string_selection(ds, Selection::new(..), len, is_unicode)?;
+    Ok(arr.first().cloned().unwrap_or_default())
+}
+
+fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, is_unicode: bool) -> Result<ArrayD<String>> {
+    let dtype = ds.dtype()?;
+    let obj_space = ds.space()?;
+    let out_shape = selection.out_shape(obj_space.shape())?;
+    let out_size: usize = if out_shape.is_empty() { 1 } else { out_shape.iter().product() };
+    if out_size == 0 {
+        return Ok(ArrayD::from_shape_vec(IxDyn(&out_shape), Vec::new()).map_err(|e| anyhow!(e))?);
+    }
+
+    let fspace = obj_space.select(selection)?;
+    let mspace = Dataspace::try_new(&out_shape)?;
+    let mut buf = vec![0u8; out_size * len];
+
+    let status = unsafe {
+        H5Dread(
+            ds.id(),
+            dtype.id(),
+            mspace.id(),
+            fspace.id(),
+            H5P_DEFAULT,
+            buf.as_mut_ptr().cast(),
+        )
+    };
+    if status < 0 {
+        return Err(anyhow!("Error reading fixed-length string data"));
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(out_size);
+    for i in 0..out_size {
+        let start = i * len;
+        let end = start + len;
+        let slice = &buf[start..end];
+        out.push(fixed_bytes_to_string(slice, is_unicode));
+    }
+
+    ArrayD::from_shape_vec(IxDyn(&out_shape), out).map_err(|e| anyhow!(e))
+}
+
+fn fixed_bytes_to_string(bytes: &[u8], _is_unicode: bool) -> String {
+    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 fn format_array_with_ellipsis<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {
