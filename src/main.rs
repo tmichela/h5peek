@@ -1,4 +1,4 @@
-use clap::{Parser, ArgAction};
+use clap::{Parser, ArgAction, ValueEnum};
 use std::path::PathBuf;
 use anyhow::{Result, Context};
 use std::io::IsTerminal;
@@ -60,6 +60,17 @@ struct Args {
     /// Disable thousands separators in numeric output
     #[arg(long, action = ArgAction::SetTrue)]
     no_grouping: bool,
+
+    /// Color output: auto, always, or never
+    #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
+    color: ColorMode,
+}
+
+#[derive(Copy, Clone, Debug, ValueEnum)]
+enum ColorMode {
+    Auto,
+    Always,
+    Never,
 }
 
 fn main() -> Result<()> {
@@ -82,6 +93,7 @@ fn main() -> Result<()> {
         None => "/".to_string(),
     };
 
+    let no_color_env = std::env::var_os("NO_COLOR").is_some();
     if args.pager && !args.no_pager && std::io::stdout().is_terminal() {
         if std::env::var("LESSCHARSET").is_err() {
             std::env::set_var("LESSCHARSET", "utf-8");
@@ -91,8 +103,23 @@ fn main() -> Result<()> {
             std::env::set_var("PAGER", "less -R");
         }
         pager::Pager::new().setup();
-        // Force colors on because pager might make is_a_tty false for the process
-        colored::control::set_override(true);
+        // Force colors because pager might make is_a_tty false for the process
+        let pager_color = match args.color {
+            ColorMode::Always => true,
+            ColorMode::Never => false,
+            ColorMode::Auto => !no_color_env,
+        };
+        colored::control::set_override(pager_color);
+    } else {
+        match args.color {
+            ColorMode::Always => colored::control::set_override(true),
+            ColorMode::Never => colored::control::set_override(false),
+            ColorMode::Auto => {
+                if no_color_env {
+                    colored::control::set_override(false);
+                }
+            }
+        }
     }
 
     let array_format = utils::NumFormat {

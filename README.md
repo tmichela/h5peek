@@ -42,6 +42,20 @@ h5peek file.h5 --depth 2
 h5peek file.h5 --unsorted
 ```
 
+## Color output
+
+By default, `h5peek` uses color when stdout is a terminal and `NO_COLOR` is not set.
+
+```bash
+# Force color output (even when piped)
+h5peek file.h5 --color always
+
+# Disable color output
+h5peek file.h5 --color never
+```
+
+When using a pager (`--pager`), `h5peek` will force color unless `NO_COLOR` is set or `--color never` is used.
+
 ## Error handling
 
 - Metadata always prints for datasets; data previews are best-effort.

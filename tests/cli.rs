@@ -33,6 +33,12 @@ fn base_cmd() -> Command {
     cmd
 }
 
+fn base_cmd_allow_color() -> Command {
+    let mut cmd = cargo_bin_cmd!("h5peek");
+    cmd.env("HDF5_USE_FILE_LOCKING", "FALSE");
+    cmd
+}
+
 #[test]
 fn tree_view_shows_group_and_dataset() {
     let path = sample_file_path();
@@ -299,4 +305,43 @@ fn invalid_slice_is_an_error() {
         .assert()
         .failure()
         .stderr(contains("Error parsing slice"));
+}
+
+#[test]
+fn color_always_emits_ansi() {
+    let path = sample_file_path();
+
+    base_cmd_allow_color()
+        .arg(&path)
+        .arg("--color")
+        .arg("always")
+        .assert()
+        .success()
+        .stdout(contains("\u{1b}["));
+}
+
+#[test]
+fn color_never_suppresses_ansi() {
+    let path = sample_file_path();
+
+    base_cmd_allow_color()
+        .arg(&path)
+        .arg("--color")
+        .arg("never")
+        .assert()
+        .success()
+        .stdout(contains("\u{1b}[").not());
+}
+
+#[test]
+fn color_auto_respects_no_color_env() {
+    let path = sample_file_path();
+
+    base_cmd()
+        .arg(&path)
+        .arg("--color")
+        .arg("auto")
+        .assert()
+        .success()
+        .stdout(contains("\u{1b}[").not());
 }
