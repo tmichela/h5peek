@@ -8,7 +8,13 @@ repository = "https://github.com/tmichela/h5peek"
 readme = "README.md"
 keywords = ["hdf5", "cli", "visualization", "inspect", "data"]
 categories = ["command-line-utilities", "visualization", "science"]
-exclude = ["/.gitignore"]
+include = [
+    "Cargo.toml",
+    "LICENSE",
+    "README.md",
+    "/src/**",
+    "/tests/**",
+]
 
 [dependencies]
 anyhow = "1.0.100"
