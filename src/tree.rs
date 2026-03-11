@@ -84,7 +84,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
         Node::Dataset(d) => (d.id(), d.name()),
     };
 
-    let matches_filter = filter.map_or(true, |f| f.is_match(&full_path));
+    let matches_filter = filter.is_none_or(|f| f.is_match(&full_path));
     let addr = utils::get_object_addr(obj_id).unwrap_or(0); // If fails (0), we just don't dedup, or risk infinite loop? 0 is likely invalid addr.
 
     // If we have seen this address before, prints reference
@@ -101,7 +101,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
         return Ok(true);
     }
 
-    let show_children = max_depth.map_or(true, |d| depth < d);
+    let show_children = max_depth.is_none_or(|d| depth < d);
     let show_all_children = force_show || matches_filter;
     let mut child_entries: Vec<ChildEntry> = Vec::new();
     if let Node::Group(g) = &node {
@@ -114,13 +114,13 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
                 let child_full_path = join_hdf5_path(&full_path, &member_name);
                 match utils::get_link_info(g.id(), &member_name) {
                     utils::LinkInfo::Soft(target) => {
-                        if show_all_children || filter.map_or(true, |f| f.is_match(&child_full_path)) {
+                        if show_all_children || filter.is_none_or(|f| f.is_match(&child_full_path)) {
                             child_entries.push(ChildEntry::Soft { name: member_name, target });
                         }
                         continue;
                     },
                     utils::LinkInfo::External { file, path } => {
-                        if show_all_children || filter.map_or(true, |f| f.is_match(&child_full_path)) {
+                        if show_all_children || filter.is_none_or(|f| f.is_match(&child_full_path)) {
                             child_entries.push(ChildEntry::External { name: member_name, file, path });
                         }
                         continue;
@@ -274,7 +274,7 @@ fn node_matches_or_descendant(node: &Node, filter: &PathFilter, depth: usize, ma
         return Ok(true);
     }
 
-    let show_children = max_depth.map_or(true, |d| depth < d);
+    let show_children = max_depth.is_none_or(|d| depth < d);
     let Node::Group(g) = node else {
         return Ok(false);
     };

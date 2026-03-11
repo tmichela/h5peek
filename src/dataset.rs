@@ -56,7 +56,7 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
         let maxshape = space.maxdims();
         let current_shape = &shape;
         let different = maxshape.len() != current_shape.len() || 
-                        maxshape.iter().zip(current_shape.iter()).any(|(m, s)| m.map_or(true, |mv| mv != *s));
+                        maxshape.iter().zip(current_shape.iter()).any(|(m, s)| m.is_none_or(|mv| mv != *s));
         
         if different {
             println!("   maxshape: {}", utils::fmt_maxshape(&maxshape));
@@ -337,7 +337,7 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
 
     // If dataset is very large, take a slice
     let total_size = total_size_checked(&shape);
-    if total_size.map_or(true, |size| size > 100) {
+    if total_size.is_none_or(|size| size > 100) {
         // Construct a sample slice string like "0:10, 0:10, ..."
         let mut sample_parts = Vec::new();
         for dim_len in &shape {
@@ -425,7 +425,7 @@ fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, i
     let out_shape = selection.out_shape(obj_space.shape())?;
     let out_size: usize = if out_shape.is_empty() { 1 } else { out_shape.iter().product() };
     if out_size == 0 {
-        return Ok(ArrayD::from_shape_vec(IxDyn(&out_shape), Vec::new()).map_err(|e| anyhow!(e))?);
+        return ArrayD::from_shape_vec(IxDyn(&out_shape), Vec::new()).map_err(|e| anyhow!(e));
     }
 
     let fspace = obj_space.select(selection)?;
