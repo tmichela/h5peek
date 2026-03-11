@@ -42,6 +42,19 @@ h5peek file.h5 --depth 2
 h5peek file.h5 --unsorted
 ```
 
+## Dev quickstart
+
+System dependency: HDF5 development libraries are required (CI installs `libhdf5-dev` on Ubuntu).
+
+```bash
+# Run tests
+cargo test
+
+# Run the CLI locally
+cargo run -- data/sample.h5
+cargo run -- data/sample.h5 /arrays_1d/int32
+```
+
 ## Color output
 
 By default, `h5peek` uses color when stdout is a terminal and `NO_COLOR` is not set.

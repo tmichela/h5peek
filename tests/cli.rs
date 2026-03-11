@@ -2,29 +2,9 @@ use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 use predicates::str::{contains, is_match};
-use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
 
-fn sample_file_path() -> PathBuf {
-    std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE");
-    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("data")
-        .join("sample.h5");
-    assert!(
-        path.exists(),
-        "Sample file not found at {}. Run `python3 script/generate_sample.py data/sample.h5`.",
-        path.display()
-    );
-    path
-}
-
-fn temp_h5_path(name: &str) -> PathBuf {
-    let mut path = std::env::temp_dir();
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    path.push(format!("h5peek_{}_{}_{}.h5", name, std::process::id(), nanos));
-    path
-}
-
+mod common;
+use common::{create_external_link_fixture, create_fixed_ascii_array, sample_file_path, temp_h5_path};
 
 fn base_cmd() -> Command {
     let mut cmd = cargo_bin_cmd!("h5peek");
@@ -146,17 +126,8 @@ fn fixed_length_string_scalar_is_displayed() {
 
 #[test]
 fn fixed_length_string_array_is_displayed() {
-    use hdf5::types::FixedAscii;
-
     let path = temp_h5_path("fixed_ascii_array");
-    let file = hdf5::File::create(&path).unwrap();
-    let data = vec![
-        FixedAscii::<8>::from_ascii(b"alpha").unwrap(),
-        FixedAscii::<8>::from_ascii(b"beta").unwrap(),
-        FixedAscii::<8>::from_ascii(b"gamma").unwrap(),
-    ];
-    file.new_dataset_builder().with_data(&data).create("strings").unwrap();
-    drop(file);
+    create_fixed_ascii_array(&path);
 
     base_cmd()
         .arg(&path)
@@ -215,24 +186,7 @@ fn default_tree_output_uses_natural_sort() {
 
 #[test]
 fn external_link_formatting_avoids_double_slash() {
-    let target = temp_h5_path("ext_target");
-    let source = temp_h5_path("ext_source");
-
-    {
-        let file = hdf5::File::create(&target).unwrap();
-        let group = file.create_group("g").unwrap();
-        group.new_dataset_builder().with_data(&[1_i32]).create("d").unwrap();
-        file.flush().unwrap();
-    }
-
-    {
-        let file = hdf5::File::create(&source).unwrap();
-        let group = file.create_group("links").unwrap();
-        group.link_external(target.to_str().unwrap(), "/g/d", "ext_d").unwrap();
-        file.flush().unwrap();
-    }
-
-    let expected = format!("{}{}", target.display(), "/g/d");
+    let (source, target, expected) = create_external_link_fixture();
     let double = format!("{}//g/d", target.display());
 
     base_cmd()
