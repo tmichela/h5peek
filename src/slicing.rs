@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
-use hdf5::{Hyperslab, Selection, SliceOrIndex};
+use hdf5::Selection;
+use ndarray::{IxDyn, SliceInfo, SliceInfoElem};
 
 pub fn parse_slice(s: &str, shape: &[usize]) -> Result<Selection> {
     let s = s.trim();
@@ -12,36 +13,47 @@ pub fn parse_slice(s: &str, shape: &[usize]) -> Result<Selection> {
         return Err(anyhow!("Too many indices for {}D dataset", shape.len()));
     }
 
-    let mut ranges: Vec<SliceOrIndex> = Vec::with_capacity(shape.len());
+    let mut ranges: Vec<SliceInfoElem> = Vec::with_capacity(shape.len());
     for (i, dim_len) in shape.iter().enumerate() {
         let range = match parts.get(i) {
-            Some(part) => parse_range(part, *dim_len)?,
-            None => (0..*dim_len).into(),
+            Some(part) => parse_range(*part, *dim_len)?,
+            None => SliceInfoElem::Slice {
+                start: 0,
+                end: Some(*dim_len as isize),
+                step: 1,
+            },
         };
         ranges.push(range);
     }
 
-    Ok(Selection::new(Hyperslab::from(ranges)))
+    let slice_info: SliceInfo<Vec<SliceInfoElem>, IxDyn, IxDyn> =
+        SliceInfo::try_from(ranges).map_err(|_| anyhow!("Invalid slice: {}", s))?;
+    Selection::try_from(slice_info).map_err(|e| anyhow!("Invalid slice: {}", e))
 }
 
-fn parse_range(s: &str, dim_len: usize) -> Result<SliceOrIndex> {
-    let s = s.trim();
+fn parse_range(s: &str, dim_len: usize) -> Result<SliceInfoElem> {
+    let original = s.trim();
+    let s = normalize_slice_part(original);
     if s == ":" || s.is_empty() {
-        return Ok((0..dim_len).into());
+        return Ok(SliceInfoElem::Slice {
+            start: 0,
+            end: Some(dim_len as isize),
+            step: 1,
+        });
     }
     
     if !s.contains(':') {
-        let idx = s.parse::<isize>().map_err(|_| anyhow!("Invalid index: {}", s))?;
+        let idx = s.parse::<isize>().map_err(|_| anyhow!("Invalid index: {}", original))?;
         let start = if idx < 0 { dim_len as isize + idx } else { idx };
         if start < 0 || start >= dim_len as isize {
-            return Err(anyhow!("Index {} out of bounds for dimension of length {}", s, dim_len));
+            return Err(anyhow!("Index {} out of bounds for dimension of length {}", original, dim_len));
         }
-        return Ok(SliceOrIndex::Index(start as usize));
+        return Ok(SliceInfoElem::Index(start));
     }
 
     let parts: Vec<&str> = s.split(':').collect();
     if parts.len() > 3 {
-        return Err(anyhow!("Invalid slice: {}", s));
+        return Err(anyhow!("Invalid slice: {}", original));
     }
     let start_s = parts[0].trim();
     let stop_s = if parts.len() > 1 { parts[1].trim() } else { "" };
@@ -55,7 +67,7 @@ fn parse_range(s: &str, dim_len: usize) -> Result<SliceOrIndex> {
         return Err(anyhow!("Slice step cannot be 0"));
     }
     if step < 0 {
-        return Err(anyhow!("Negative slice steps are not supported: {}", s));
+        return Err(anyhow!("Negative slice steps are not supported: {}", original));
     }
 
     if start < 0 {
@@ -65,11 +77,37 @@ fn parse_range(s: &str, dim_len: usize) -> Result<SliceOrIndex> {
         stop += dim_len as isize;
     }
 
-    let start = start.clamp(0, dim_len as isize) as usize;
-    let stop = stop.clamp(0, dim_len as isize) as usize;
-    let step = step as usize;
+    let start = start.clamp(0, dim_len as isize);
+    let stop = stop.clamp(0, dim_len as isize);
 
-    Ok(SliceOrIndex::SliceTo { start, step, end: stop, block: 1 })
+    Ok(SliceInfoElem::Slice {
+        start,
+        end: Some(stop),
+        step,
+    })
+}
+
+fn normalize_slice_part(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c.is_whitespace() {
+            continue;
+        }
+        if c == '.' {
+            if chars.peek() == Some(&'.') {
+                chars.next();
+                out.push(':');
+                continue;
+            }
+        }
+        if c == ';' {
+            out.push(':');
+            continue;
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -79,20 +117,50 @@ mod tests {
     #[test]
     fn parse_range_supports_steps() {
         match parse_range("0:10:2", 10).unwrap() {
-            SliceOrIndex::SliceTo { start, step, end, block } => {
+            SliceInfoElem::Slice { start, end, step } => {
                 assert_eq!(start, 0);
                 assert_eq!(step, 2);
-                assert_eq!(end, 10);
-                assert_eq!(block, 1);
+                assert_eq!(end, Some(10));
             }
             _ => panic!("expected slice"),
         }
         match parse_range("::2", 10).unwrap() {
-            SliceOrIndex::SliceTo { start, step, end, block } => {
+            SliceInfoElem::Slice { start, end, step } => {
                 assert_eq!(start, 0);
                 assert_eq!(step, 2);
-                assert_eq!(end, 10);
-                assert_eq!(block, 1);
+                assert_eq!(end, Some(10));
+            }
+            _ => panic!("expected slice"),
+        }
+    }
+
+    #[test]
+    fn parse_range_supports_dot_ranges_and_semicolon_steps() {
+        match parse_range("0..10;2", 10).unwrap() {
+            SliceInfoElem::Slice { start, end, step } => {
+                assert_eq!(start, 0);
+                assert_eq!(step, 2);
+                assert_eq!(end, Some(10));
+            }
+            _ => panic!("expected slice"),
+        }
+        match parse_range("..", 10).unwrap() {
+            SliceInfoElem::Slice { start, end, step } => {
+                assert_eq!(start, 0);
+                assert_eq!(step, 1);
+                assert_eq!(end, Some(10));
+            }
+            _ => panic!("expected slice"),
+        }
+    }
+
+    #[test]
+    fn parse_range_ignores_whitespace() {
+        match parse_range(" 0 .. 10 ; 2 ", 10).unwrap() {
+            SliceInfoElem::Slice { start, end, step } => {
+                assert_eq!(start, 0);
+                assert_eq!(step, 2);
+                assert_eq!(end, Some(10));
             }
             _ => panic!("expected slice"),
         }
@@ -106,13 +174,15 @@ mod tests {
 
     #[test]
     fn parse_range_accepts_valid_negative_index() {
-        assert_eq!(parse_range("-1", 5).unwrap(), SliceOrIndex::Index(4));
+        assert_eq!(parse_range("-1", 5).unwrap(), SliceInfoElem::Index(4));
     }
 
     #[test]
     fn parse_slice_accepts_step_expression() {
         assert!(parse_slice("0:10:2", &[10]).is_ok());
         assert!(parse_slice("::2", &[10]).is_ok());
+        assert!(parse_slice("0..10;2", &[10]).is_ok());
+        assert!(parse_slice("..", &[10]).is_ok());
     }
 
     #[test]

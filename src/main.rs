@@ -37,7 +37,7 @@ struct Args {
     #[arg(short, long)]
     depth: Option<usize>,
 
-    /// Select part of a dataset to examine, using Python slicing syntax
+    /// Select part of a dataset to examine, using Python or Rust-style slicing syntax
     #[arg(short, long)]
     slice: Option<String>,
 
