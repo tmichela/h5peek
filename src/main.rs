@@ -272,3 +272,72 @@ fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
         }
     }
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env_var(key: &str, value: Option<&str>, f: impl FnOnce()) {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(key);
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+
+        if let Err(err) = result {
+            std::panic::resume_unwind(err);
+        }
+    }
+
+    #[test]
+    fn resolve_pager_command_prefers_arg() {
+        with_env_var("PAGER", Some("more"), || {
+            let args = Args::parse_from(["h5peek", "file.h5", "--pager", "most"]);
+            assert_eq!(resolve_pager_command(&args).as_deref(), Some("most"));
+        });
+    }
+
+    #[test]
+    fn resolve_pager_command_no_pager_wins() {
+        with_env_var("PAGER", Some("more"), || {
+            let args = Args::parse_from([
+                "h5peek",
+                "file.h5",
+                "--pager",
+                "most",
+                "--no-pager",
+            ]);
+            assert_eq!(resolve_pager_command(&args), None);
+        });
+    }
+
+    #[test]
+    fn resolve_pager_command_defaults() {
+        with_env_var("PAGER", Some("more"), || {
+            let args = Args::parse_from(["h5peek", "file.h5"]);
+            assert_eq!(resolve_pager_command(&args).as_deref(), Some("more"));
+        });
+        with_env_var("PAGER", None, || {
+            let args = Args::parse_from(["h5peek", "file.h5"]);
+            assert_eq!(resolve_pager_command(&args).as_deref(), Some("less -R"));
+        });
+    }
+
+    #[test]
+    fn args_no_attr_truncate_flag() {
+        let args = Args::parse_from(["h5peek", "file.h5", "--no-attr-truncate"]);
+        assert!(args.no_attr_truncate);
+    }
+}

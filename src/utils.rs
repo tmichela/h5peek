@@ -768,7 +768,8 @@ fn float_size_to_bits(size: FloatSize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode};
+    use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode, FixedAscii};
+    use ndarray::array;
     use std::str::FromStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -899,6 +900,71 @@ mod tests {
 
         let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
         let expected = format!("{}...{}", unit.repeat(10), unit.repeat(10));
+        assert_eq!(formatted, expected);
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_format_attribute_value_string_array_truncation_toggle() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_utf8_arr_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file
+            .new_attr::<VarLenUnicode>()
+            .shape((1, 2))
+            .create("utf8_arr")
+            .unwrap();
+
+        let long = "a".repeat(60);
+        let arr = array![[
+            VarLenUnicode::from_str("alpha").unwrap(),
+            VarLenUnicode::from_str(&long).unwrap(),
+        ]];
+        attr.as_writer().write(&arr).unwrap();
+
+        let formatted_trunc = format_attribute_value(&attr, &NumFormat::default(), true);
+        let head = "a".repeat(20);
+        let tail = "a".repeat(20);
+        let expected = format!("[\n  [\"alpha\", \"{}...{}\"]\n]", head, tail);
+        assert_eq!(formatted_trunc, expected);
+
+        let formatted_full = format_attribute_value(&attr, &NumFormat::default(), false);
+        assert!(formatted_full.contains(&long));
+        assert!(!formatted_full.contains("..."));
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_format_attribute_value_fixed_ascii_array() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_ascii_arr_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file
+            .new_attr::<FixedAscii<8>>()
+            .shape((1, 2))
+            .create("ascii_arr")
+            .unwrap();
+
+        let arr = array![[
+            FixedAscii::<8>::from_ascii(b"foo").unwrap(),
+            FixedAscii::<8>::from_ascii(b"bar").unwrap(),
+        ]];
+        attr.as_writer().write(&arr).unwrap();
+
+        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+        let expected = "[\n  [\"foo\", \"bar\"]\n]";
         assert_eq!(formatted, expected);
 
         drop(file);
