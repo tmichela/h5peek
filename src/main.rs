@@ -60,6 +60,9 @@ struct Args {
     /// Disable thousands separators in numeric output
     #[arg(long, action = ArgAction::SetTrue)]
     no_grouping: bool,
+    /// Disable truncation for long attribute strings
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_attr_truncate: bool,
 
     /// Color output: auto, always, or never
     #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
@@ -129,6 +132,8 @@ fn main() -> Result<()> {
     };
     let scalar_format = utils::NumFormat::scalar(!args.no_grouping);
 
+    let truncate_attr_strings = !args.no_attr_truncate;
+
     let filter = if args.filter.is_empty() {
         None
     } else {
@@ -147,7 +152,7 @@ fn main() -> Result<()> {
             format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
         };
         
-        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, !args.unsorted, filter.as_ref(), &scalar_format)?;
+        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, !args.unsorted, filter.as_ref(), &scalar_format, truncate_attr_strings)?;
         if !printed && filter.is_some() {
             eprintln!("No paths matched the filter");
         }
@@ -161,7 +166,7 @@ fn main() -> Result<()> {
         }
         let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
         println!("{}", root_name);
-        dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format)?;
+        dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format, truncate_attr_strings)?;
     } else {
         if file.link_exists(&path_str) {
             eprintln!("Object exists but is not a group or dataset: {}", path_str);

@@ -63,10 +63,10 @@ fn has_glob_meta(pattern: &str) -> bool {
     false
 }
 
-pub fn print_group_tree(group: &Group, name: &str, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, filter: Option<&PathFilter>, fmt: &utils::NumFormat) -> Result<bool> {
+pub fn print_group_tree(group: &Group, name: &str, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, filter: Option<&PathFilter>, fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<bool> {
     let mut visited = HashMap::new();
     let mut filter_guard = HashSet::new();
-    print_node_impl(Node::Group(group.clone()), name, "", true, 0, expand_attrs, max_depth, sort_members, &mut visited, filter, &mut filter_guard, false, fmt)
+    print_node_impl(Node::Group(group.clone()), name, "", true, 0, expand_attrs, max_depth, sort_members, &mut visited, filter, &mut filter_guard, false, fmt, truncate_attr_strings)
 }
 
 enum Node {
@@ -74,7 +74,7 @@ enum Node {
     Dataset(Dataset),
 }
 
-fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, visited: &mut HashMap<u64, String>, filter: Option<&PathFilter>, filter_guard: &mut HashSet<u64>, force_show: bool, fmt: &utils::NumFormat) -> Result<bool> {
+fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: usize, expand_attrs: bool, max_depth: Option<usize>, sort_members: bool, visited: &mut HashMap<u64, String>, filter: Option<&PathFilter>, filter_guard: &mut HashSet<u64>, force_show: bool, fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<bool> {
     let connector = if depth == 0 { "" } else if is_last { "└ " } else { "├ " };
     
     // Check for visited (Hard Link cycle detection)
@@ -199,8 +199,8 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
 
     if expand_attrs && n_attrs > 0 {
          match &node {
-             Node::Group(g) => print_attrs(g, &child_prefix, fmt)?,
-             Node::Dataset(d) => print_attrs(d, &child_prefix, fmt)?,
+             Node::Group(g) => print_attrs(g, &child_prefix, fmt, truncate_attr_strings)?,
+             Node::Dataset(d) => print_attrs(d, &child_prefix, fmt, truncate_attr_strings)?,
          }
     }
 
@@ -227,7 +227,7 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
                         continue;
                     },
                     ChildEntry::Node { name: member_name, node: child_node } => {
-                        print_node_impl(child_node, &member_name, &child_prefix, is_last_child, depth + 1, expand_attrs, max_depth, sort_members, visited, filter, filter_guard, show_all_children, fmt)?;
+                        print_node_impl(child_node, &member_name, &child_prefix, is_last_child, depth + 1, expand_attrs, max_depth, sort_members, visited, filter, filter_guard, show_all_children, fmt, truncate_attr_strings)?;
                     }
                 };
             }
@@ -237,14 +237,14 @@ fn print_node_impl(node: Node, name: &str, prefix: &str, is_last: bool, depth: u
     Ok(true)
 }
 
-fn print_attrs(obj: &hdf5::Location, prefix: &str, fmt: &utils::NumFormat) -> Result<()> {
+fn print_attrs(obj: &hdf5::Location, prefix: &str, fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<()> {
      let attrs = obj.attr_names()?;
      let n = attrs.len();
      println!("{}│ {} attributes:", prefix, n.to_string().yellow());
      
      for name in attrs {
          let attr = obj.attr(&name)?;
-         let value = utils::format_attribute_value(&attr, fmt);
+         let value = utils::format_attribute_value(&attr, fmt, truncate_attr_strings);
          println!("{}│  {}: {}", prefix, name, value);
      }
      Ok(())
