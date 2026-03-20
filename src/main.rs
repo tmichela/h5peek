@@ -25,9 +25,9 @@ struct Args {
     #[arg(long)]
     attrs: bool,
 
-    /// Use a pager to display output if it is too long
-    #[arg(long, default_value_t = true)]
-    pager: bool,
+    /// Pager command to use (default: $PAGER or "less -R")
+    #[arg(long, value_name = "PAGER")]
+    pager: Option<String>,
 
     /// Disable pager
     #[arg(long, action = ArgAction::SetTrue)]
@@ -101,6 +101,19 @@ fn install_broken_pipe_handler() {
 }
 
 
+fn resolve_pager_command(args: &Args) -> Option<String> {
+    if args.no_pager {
+        return None;
+    }
+    if let Some(cmd) = args.pager.as_deref() {
+        return Some(cmd.to_string());
+    }
+    if let Ok(cmd) = std::env::var("PAGER") {
+        return Some(cmd);
+    }
+    Some("less -R".to_string())
+}
+
 fn main() -> Result<()> {
     install_broken_pipe_handler();
     let args = Args::parse();
@@ -123,13 +136,14 @@ fn main() -> Result<()> {
     };
 
     let no_color_env = std::env::var_os("NO_COLOR").is_some();
-    if args.pager && !args.no_pager && std::io::stdout().is_terminal() {
+    let pager_cmd = resolve_pager_command(&args);
+
+    if pager_cmd.is_some() && std::io::stdout().is_terminal() {
         if std::env::var("LESSCHARSET").is_err() {
             std::env::set_var("LESSCHARSET", "utf-8");
         }
-        // Ensure less handles colors by default if PAGER is not set
-        if std::env::var("PAGER").is_err() {
-            std::env::set_var("PAGER", "less -R");
+        if let Some(cmd) = pager_cmd.as_deref() {
+            std::env::set_var("PAGER", cmd);
         }
         pager::Pager::new().setup();
         // Force colors because pager might make is_a_tty false for the process
