@@ -76,7 +76,33 @@ enum ColorMode {
     Never,
 }
 
+fn install_broken_pipe_handler() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(err) = info.payload().downcast_ref::<std::io::Error>() {
+            if err.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+        }
+
+        let mut broken_pipe = false;
+        if let Some(msg) = info.payload().downcast_ref::<String>() {
+            broken_pipe = msg.contains("Broken pipe");
+        } else if let Some(msg) = info.payload().downcast_ref::<&str>() {
+            broken_pipe = msg.contains("Broken pipe");
+        }
+
+        if broken_pipe {
+            std::process::exit(0);
+        }
+
+        default_hook(info);
+    }));
+}
+
+
 fn main() -> Result<()> {
+    install_broken_pipe_handler();
     let args = Args::parse();
     
     if !args.file.exists() {
