@@ -15,7 +15,7 @@ const ARRAY_EDGE: usize = 3;
 const MAX_COMPOUND_ROWS: usize = 20;
 const COMPOUND_EDGE: usize = 5;
 
-pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &utils::NumFormat, scalar_fmt: &utils::NumFormat) -> Result<()> {
+pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &utils::NumFormat, scalar_fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<()> {
     let dtype = ds.dtype()?;
     let desc = dtype.to_descriptor().ok();
     let shape = ds.shape();
@@ -98,7 +98,7 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
     println!("\n{} attributes:", attr_names.len());
     for name in attr_names {
         let attr = ds.attr(&name)?;
-        println!("* {}: {}", name, utils::format_attribute_value(&attr, scalar_fmt));
+        println!("* {}: {}", name, utils::format_attribute_value(&attr, scalar_fmt, truncate_attr_strings));
     }
     Ok(())
 }

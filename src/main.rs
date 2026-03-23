@@ -25,9 +25,9 @@ struct Args {
     #[arg(long)]
     attrs: bool,
 
-    /// Use a pager to display output if it is too long
-    #[arg(long, default_value_t = true)]
-    pager: bool,
+    /// Pager command to use (default: $PAGER or "less -R")
+    #[arg(long, value_name = "PAGER")]
+    pager: Option<String>,
 
     /// Disable pager
     #[arg(long, action = ArgAction::SetTrue)]
@@ -60,6 +60,9 @@ struct Args {
     /// Disable thousands separators in numeric output
     #[arg(long, action = ArgAction::SetTrue)]
     no_grouping: bool,
+    /// Disable truncation for long attribute strings
+    #[arg(long, action = ArgAction::SetTrue)]
+    no_attr_truncate: bool,
 
     /// Color output: auto, always, or never
     #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
@@ -73,7 +76,46 @@ enum ColorMode {
     Never,
 }
 
+fn install_broken_pipe_handler() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if let Some(err) = info.payload().downcast_ref::<std::io::Error>() {
+            if err.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            }
+        }
+
+        let mut broken_pipe = false;
+        if let Some(msg) = info.payload().downcast_ref::<String>() {
+            broken_pipe = msg.contains("Broken pipe");
+        } else if let Some(msg) = info.payload().downcast_ref::<&str>() {
+            broken_pipe = msg.contains("Broken pipe");
+        }
+
+        if broken_pipe {
+            std::process::exit(0);
+        }
+
+        default_hook(info);
+    }));
+}
+
+
+fn resolve_pager_command(args: &Args) -> Option<String> {
+    if args.no_pager {
+        return None;
+    }
+    if let Some(cmd) = args.pager.as_deref() {
+        return Some(cmd.to_string());
+    }
+    if let Ok(cmd) = std::env::var("PAGER") {
+        return Some(cmd);
+    }
+    Some("less -R".to_string())
+}
+
 fn main() -> Result<()> {
+    install_broken_pipe_handler();
     let args = Args::parse();
     
     if !args.file.exists() {
@@ -94,13 +136,14 @@ fn main() -> Result<()> {
     };
 
     let no_color_env = std::env::var_os("NO_COLOR").is_some();
-    if args.pager && !args.no_pager && std::io::stdout().is_terminal() {
+    let pager_cmd = resolve_pager_command(&args);
+
+    if pager_cmd.is_some() && std::io::stdout().is_terminal() {
         if std::env::var("LESSCHARSET").is_err() {
             std::env::set_var("LESSCHARSET", "utf-8");
         }
-        // Ensure less handles colors by default if PAGER is not set
-        if std::env::var("PAGER").is_err() {
-            std::env::set_var("PAGER", "less -R");
+        if let Some(cmd) = pager_cmd.as_deref() {
+            std::env::set_var("PAGER", cmd);
         }
         pager::Pager::new().setup();
         // Force colors because pager might make is_a_tty false for the process
@@ -129,6 +172,8 @@ fn main() -> Result<()> {
     };
     let scalar_format = utils::NumFormat::scalar(!args.no_grouping);
 
+    let truncate_attr_strings = !args.no_attr_truncate;
+
     let filter = if args.filter.is_empty() {
         None
     } else {
@@ -147,7 +192,7 @@ fn main() -> Result<()> {
             format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
         };
         
-        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, !args.unsorted, filter.as_ref(), &scalar_format)?;
+        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, !args.unsorted, filter.as_ref(), &scalar_format, truncate_attr_strings)?;
         if !printed && filter.is_some() {
             eprintln!("No paths matched the filter");
         }
@@ -161,7 +206,7 @@ fn main() -> Result<()> {
         }
         let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
         println!("{}", root_name);
-        dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format)?;
+        dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format, truncate_attr_strings)?;
     } else {
         if file.link_exists(&path_str) {
             eprintln!("Object exists but is not a group or dataset: {}", path_str);
@@ -225,5 +270,74 @@ fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
                 exit(1);
             }
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_env_var(key: &str, value: Option<&str>, f: impl FnOnce()) {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let prev = std::env::var_os(key);
+        match value {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f));
+
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+
+        if let Err(err) = result {
+            std::panic::resume_unwind(err);
+        }
+    }
+
+    #[test]
+    fn resolve_pager_command_prefers_arg() {
+        with_env_var("PAGER", Some("more"), || {
+            let args = Args::parse_from(["h5peek", "file.h5", "--pager", "most"]);
+            assert_eq!(resolve_pager_command(&args).as_deref(), Some("most"));
+        });
+    }
+
+    #[test]
+    fn resolve_pager_command_no_pager_wins() {
+        with_env_var("PAGER", Some("more"), || {
+            let args = Args::parse_from([
+                "h5peek",
+                "file.h5",
+                "--pager",
+                "most",
+                "--no-pager",
+            ]);
+            assert_eq!(resolve_pager_command(&args), None);
+        });
+    }
+
+    #[test]
+    fn resolve_pager_command_defaults() {
+        with_env_var("PAGER", Some("more"), || {
+            let args = Args::parse_from(["h5peek", "file.h5"]);
+            assert_eq!(resolve_pager_command(&args).as_deref(), Some("more"));
+        });
+        with_env_var("PAGER", None, || {
+            let args = Args::parse_from(["h5peek", "file.h5"]);
+            assert_eq!(resolve_pager_command(&args).as_deref(), Some("less -R"));
+        });
+    }
+
+    #[test]
+    fn args_no_attr_truncate_flag() {
+        let args = Args::parse_from(["h5peek", "file.h5", "--no-attr-truncate"]);
+        assert!(args.no_attr_truncate);
     }
 }

@@ -1,7 +1,10 @@
 use hdf5::Datatype;
-use hdf5::types::{TypeDescriptor, IntSize, FloatSize, VarLenUnicode};
-use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE};
+use hdf5::H5Type;
+use hdf5::types::{TypeDescriptor, IntSize, FloatSize, VarLenUnicode, VarLenAscii};
+use hdf5_sys::h5a::H5Aread;
+use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE, H5Tcopy, H5Tset_size, H5Tset_cset, H5Tset_strpad, H5Tclose, H5T_C_S1, H5T_cset_t, H5T_str_t};
 use hdf5_sys::h5p::H5P_DEFAULT;
+use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
 use std::ffi::CString;
 
 #[derive(Clone, Copy, Debug)]
@@ -432,7 +435,12 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
     }
 }
 
-pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat) -> String {
+const MAX_ATTR_STRING_ELEMS: usize = 200;
+const MAX_ATTR_ARRAY_ELEMS: usize = 10;
+const ATTR_ARRAY_EDGE: usize = 3;
+
+
+pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat, truncate_strings: bool) -> String {
     let dtype = match attr.dtype() {
         Ok(dt) => dt,
         Err(_) => return "unreadable".to_string(),
@@ -443,7 +451,15 @@ pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat) -> String
     };
 
     let shape = attr.shape();
+
+    if let Some(value) = format_string_attribute(attr, &desc, &shape, truncate_strings) {
+        return value;
+    }
+
     if !shape.is_empty() {
+        if let Some(value) = format_numeric_attribute_array(attr, &desc, &shape, fmt) {
+            return value;
+        }
         return format!("array [{}: {}]", fmt_dtype(&dtype), fmt_shape(&shape));
     }
 
@@ -452,21 +468,353 @@ pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat) -> String
         TypeDescriptor::Unsigned(_) => attr.read_scalar::<u64>().map(|v| fmt_u64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
         TypeDescriptor::Float(_) => attr.read_scalar::<f64>().map(|v| fmt_f64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
         TypeDescriptor::Boolean => attr.read_scalar::<bool>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
-        TypeDescriptor::VarLenUnicode | TypeDescriptor::FixedUnicode(_) | TypeDescriptor::FixedAscii(_) | TypeDescriptor::VarLenAscii => {
-            attr.read_scalar::<VarLenUnicode>().map(|v| {
-                let s = v.as_str().to_string();
-                if s.len() > 50 {
-                    let head = utf8_prefix_by_bytes(&s, 20);
-                    let tail = utf8_suffix_by_bytes(&s, 20);
-                    format!("{}...{}", head, tail)
-                } else {
-                    format!("'{}'", s)
-                }
-            }).unwrap_or_else(|_| "unreadable".to_string())
-        },
+        TypeDescriptor::VarLenAscii
+        | TypeDescriptor::VarLenUnicode
+        | TypeDescriptor::FixedAscii(_)
+        | TypeDescriptor::FixedUnicode(_) => "unreadable".to_string(),
         _ => format!("[{}]", fmt_dtype(&dtype)),
     }
 }
+
+fn format_string_attribute(
+    attr: &hdf5::Attribute,
+    desc: &TypeDescriptor,
+    shape: &[usize],
+    truncate_strings: bool,
+) -> Option<String> {
+    match desc {
+        TypeDescriptor::VarLenAscii => format_varlen_attr::<VarLenAscii>(attr, shape, truncate_strings),
+        TypeDescriptor::VarLenUnicode => format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings),
+        TypeDescriptor::FixedAscii(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings, H5T_cset_t::H5T_CSET_ASCII)
+            .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
+        TypeDescriptor::FixedUnicode(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings, H5T_cset_t::H5T_CSET_UTF8)
+            .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
+        _ => None,
+    }
+}
+
+fn format_numeric_attribute_array(
+    attr: &hdf5::Attribute,
+    desc: &TypeDescriptor,
+    shape: &[usize],
+    fmt: &NumFormat,
+) -> Option<String> {
+    let total = total_size_checked(shape)?;
+    if total > MAX_ATTR_ARRAY_ELEMS {
+        return None;
+    }
+
+    match desc {
+        TypeDescriptor::Integer(_) => {
+            let arr: ArrayD<i64> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| fmt_i64(*v, fmt)).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        TypeDescriptor::Unsigned(_) => {
+            let arr: ArrayD<u64> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| fmt_u64(*v, fmt)).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        TypeDescriptor::Float(_) => {
+            let arr: ArrayD<f64> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| fmt_f64(*v, fmt)).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        TypeDescriptor::Boolean => {
+            let arr: ArrayD<bool> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        _ => None,
+    }
+}
+
+
+fn format_varlen_attr<T>(attr: &hdf5::Attribute, shape: &[usize], truncate_strings: bool) -> Option<String>
+where
+    T: H5Type + AsRef<str>,
+{
+    if shape.is_empty() {
+        let v: T = attr.read_scalar().ok()?;
+        return Some(format_scalar_string(v.as_ref(), truncate_strings));
+    }
+    if string_array_too_large(shape) {
+        return None;
+    }
+    let vec: Vec<T> = attr.read_raw().ok()?;
+    let values: Vec<String> = vec.iter().map(|v| maybe_truncate_string(v.as_ref(), truncate_strings)).collect();
+    format_string_array(values, shape)
+}
+
+fn format_fixed_string_attr(
+    attr: &hdf5::Attribute,
+    len: usize,
+    shape: &[usize],
+    truncate_strings: bool,
+    cset: H5T_cset_t,
+) -> Option<String> {
+    if !shape.is_empty() && string_array_too_large(shape) {
+        return None;
+    }
+    let values = read_fixed_string_attr(attr, len, shape, cset)?;
+    if shape.is_empty() {
+        return values.first().map(|v| format_scalar_string(v, truncate_strings));
+    }
+    let truncated: Vec<String> = values.into_iter().map(|v| maybe_truncate_string(&v, truncate_strings)).collect();
+    format_string_array(truncated, shape)
+}
+
+fn read_fixed_string_attr(
+    attr: &hdf5::Attribute,
+    len: usize,
+    shape: &[usize],
+    cset: H5T_cset_t,
+) -> Option<Vec<String>> {
+    let total = if shape.is_empty() { 1 } else { total_size_checked(shape)? };
+    if len == 0 {
+        return Some(vec![String::new(); total]);
+    }
+
+    let mut elem_len = len;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut read_ok = false;
+
+    if let Ok(dtype) = attr.dtype() {
+        let file_len = dtype.size();
+        if file_len == 0 {
+            return Some(vec![String::new(); total]);
+        }
+        elem_len = file_len;
+        buf.resize(total.saturating_mul(elem_len), 0);
+        let status = unsafe { H5Aread(attr.id(), dtype.id(), buf.as_mut_ptr().cast()) };
+        if status >= 0 {
+            read_ok = true;
+        }
+    }
+
+    if !read_ok {
+        elem_len = len.max(1);
+        buf.resize(total.saturating_mul(elem_len), 0);
+
+        let mem_type = unsafe { H5Tcopy(*H5T_C_S1) };
+        if mem_type < 0 {
+            return None;
+        }
+        if unsafe { H5Tset_size(mem_type, elem_len as _) } < 0 {
+            unsafe { H5Tclose(mem_type) };
+            return None;
+        }
+
+        // Best-effort: some HDF5 builds reject these, but the default is fine.
+        let _ = unsafe { H5Tset_cset(mem_type, cset) };
+        let _ = unsafe { H5Tset_strpad(mem_type, H5T_str_t::H5T_STR_NULLTERM) };
+
+        let status = unsafe { H5Aread(attr.id(), mem_type, buf.as_mut_ptr().cast()) };
+        unsafe { H5Tclose(mem_type) };
+        if status < 0 {
+            return None;
+        }
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(total);
+    for i in 0..total {
+        let start = i * elem_len;
+        let end = start + elem_len;
+        if end > buf.len() {
+            return None;
+        }
+        out.push(fixed_bytes_to_string(&buf[start..end]));
+    }
+
+    Some(out)
+}
+
+fn fixed_bytes_to_string(bytes: &[u8]) -> String {
+    if let Some(end) = bytes.iter().position(|b| *b == 0) {
+        return String::from_utf8_lossy(&bytes[..end]).into_owned();
+    }
+    let mut end = bytes.len();
+    while end > 0 && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn format_array_display(values: Vec<String>, shape: &[usize], quote_strings: bool, max_elems: usize) -> Option<String> {
+    let total = total_size_checked(shape)?;
+    if total != values.len() {
+        return None;
+    }
+    if total > max_elems {
+        return None;
+    }
+    let arr = ArrayD::from_shape_vec(IxDyn(shape), values).ok()?;
+    Some(format_array_with_ellipsis_display(&arr, quote_strings))
+}
+
+fn format_string_array(values: Vec<String>, shape: &[usize]) -> Option<String> {
+    format_array_display(values, shape, true, MAX_ATTR_STRING_ELEMS)
+}
+
+
+
+
+fn string_array_too_large(shape: &[usize]) -> bool {
+    if shape.is_empty() {
+        return false;
+    }
+    match total_size_checked(shape) {
+        Some(size) => size > MAX_ATTR_STRING_ELEMS,
+        None => true,
+    }
+}
+
+fn format_scalar_string(value: &str, truncate: bool) -> String {
+    if truncate && value.len() > 50 {
+        let head = utf8_prefix_by_bytes(value, 20);
+        let tail = utf8_suffix_by_bytes(value, 20);
+        format!("{}...{}", head, tail)
+    } else {
+        format!("'{}'", value)
+    }
+}
+
+
+fn maybe_truncate_string(value: &str, truncate: bool) -> String {
+    if truncate && value.len() > 50 {
+        let head = utf8_prefix_by_bytes(value, 20);
+        let tail = utf8_suffix_by_bytes(value, 20);
+        format!("{}...{}", head, tail)
+    } else {
+        value.to_string()
+    }
+}
+
+
+fn total_size_checked(shape: &[usize]) -> Option<usize> {
+    shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d))
+}
+
+#[derive(Clone, Copy)]
+enum AxisItem {
+    Index(usize),
+    Ellipsis,
+}
+
+fn axis_indices(len: usize, edge: usize) -> Vec<AxisItem> {
+    if len <= edge * 2 {
+        return (0..len).map(AxisItem::Index).collect();
+    }
+    let mut out = Vec::with_capacity(edge * 2 + 1);
+    for i in 0..edge {
+        out.push(AxisItem::Index(i));
+    }
+    out.push(AxisItem::Ellipsis);
+    for i in (len - edge)..len {
+        out.push(AxisItem::Index(i));
+    }
+    out
+}
+
+fn format_array_with_ellipsis_display(arr: &ArrayD<String>, quote_strings: bool) -> String {
+    if arr.is_empty() {
+        return "[]".to_string();
+    }
+    let needs_ellipsis = arr.len() > MAX_ATTR_STRING_ELEMS
+        || arr.shape().iter().any(|&d| d > ATTR_ARRAY_EDGE * 2);
+    if !needs_ellipsis {
+        return format_array_view_display(arr.view(), quote_strings);
+    }
+    format_array_view_with_ellipsis_display(arr.view(), ATTR_ARRAY_EDGE, quote_strings)
+}
+
+fn format_array_view_with_ellipsis_display(
+    view: ArrayViewD<String>,
+    edge: usize,
+    quote_strings: bool,
+) -> String {
+    match view.ndim() {
+        0 => view.first().map(|v| format_string_element(v, quote_strings)).unwrap_or_default(),
+        1 => {
+            let mut parts = Vec::new();
+            for item in axis_indices(view.shape()[0], edge) {
+                match item {
+                    AxisItem::Index(i) => {
+                        let v = view.index_axis(Axis(0), i);
+                        parts.push(v.first().map(|s| format_string_element(s, quote_strings)).unwrap_or_default());
+                    }
+                    AxisItem::Ellipsis => parts.push("...".to_string()),
+                }
+            }
+            format!("[{}]", parts.join(", "))
+        }
+        _ => {
+            let mut parts = Vec::new();
+            for item in axis_indices(view.shape()[0], edge) {
+                match item {
+                    AxisItem::Index(i) => {
+                        let v = view.index_axis(Axis(0), i);
+                        parts.push(format_array_view_with_ellipsis_display(v.into_dyn(), edge, quote_strings));
+                    }
+                    AxisItem::Ellipsis => parts.push("...".to_string()),
+                }
+            }
+            format_multiline_list(&parts)
+        }
+    }
+}
+
+fn format_array_view_display(view: ArrayViewD<String>, quote_strings: bool) -> String {
+    match view.ndim() {
+        0 => view.first().map(|v| format_string_element(v, quote_strings)).unwrap_or_default(),
+        1 => {
+            let mut parts = Vec::new();
+            for i in 0..view.shape()[0] {
+                let v = view.index_axis(Axis(0), i);
+                parts.push(v.first().map(|s| format_string_element(s, quote_strings)).unwrap_or_default());
+            }
+            format!("[{}]", parts.join(", "))
+        }
+        _ => {
+            let mut parts = Vec::new();
+            for i in 0..view.shape()[0] {
+                let v = view.index_axis(Axis(0), i);
+                parts.push(format_array_view_display(v.into_dyn(), quote_strings));
+            }
+            format_multiline_list(&parts)
+        }
+    }
+}
+
+fn format_string_element(value: &str, quote_strings: bool) -> String {
+    if quote_strings {
+        format!("{:?}", value)
+    } else {
+        value.to_string()
+    }
+}
+
+fn format_multiline_list(parts: &[String]) -> String {
+    if parts.is_empty() {
+        return "[]".to_string();
+    }
+    let indented: Vec<String> = parts.iter().map(|p| indent_lines(p, 2)).collect();
+    format!("[\n{}\n]", indented.join(",\n"))
+}
+
+
+
+fn indent_lines(value: &str, spaces: usize) -> String {
+    let prefix = " ".repeat(spaces);
+    value
+        .lines()
+        .map(|line| format!("{prefix}{line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+
+
 
 fn utf8_prefix_by_bytes(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -519,7 +867,8 @@ fn float_size_to_bits(size: FloatSize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode};
+    use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode, FixedAscii};
+    use ndarray::array;
     use std::str::FromStr;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -648,11 +997,103 @@ mod tests {
         let v = VarLenUnicode::from_str(&long).unwrap();
         attr.as_writer().write_scalar(&v).unwrap();
 
-        let formatted = format_attribute_value(&attr, &NumFormat::default());
+        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
         let expected = format!("{}...{}", unit.repeat(10), unit.repeat(10));
         assert_eq!(formatted, expected);
 
         drop(file);
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn test_format_attribute_value_string_array_truncation_toggle() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_utf8_arr_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file
+            .new_attr::<VarLenUnicode>()
+            .shape((1, 2))
+            .create("utf8_arr")
+            .unwrap();
+
+        let long = "a".repeat(60);
+        let arr = array![[
+            VarLenUnicode::from_str("alpha").unwrap(),
+            VarLenUnicode::from_str(&long).unwrap(),
+        ]];
+        attr.as_writer().write(&arr).unwrap();
+
+        let formatted_trunc = format_attribute_value(&attr, &NumFormat::default(), true);
+        let head = "a".repeat(20);
+        let tail = "a".repeat(20);
+        let expected = format!("[\n  [\"alpha\", \"{}...{}\"]\n]", head, tail);
+        assert_eq!(formatted_trunc, expected);
+
+        let formatted_full = format_attribute_value(&attr, &NumFormat::default(), false);
+        assert!(formatted_full.contains(&long));
+        assert!(!formatted_full.contains("..."));
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_format_attribute_value_fixed_ascii_array() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_ascii_arr_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file
+            .new_attr::<FixedAscii<8>>()
+            .shape((1, 2))
+            .create("ascii_arr")
+            .unwrap();
+
+        let arr = array![[
+            FixedAscii::<8>::from_ascii(b"foo").unwrap(),
+            FixedAscii::<8>::from_ascii(b"bar").unwrap(),
+        ]];
+        attr.as_writer().write(&arr).unwrap();
+
+        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+        let expected = "[\n  [\"foo\", \"bar\"]\n]";
+        assert_eq!(formatted, expected);
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_format_attribute_value_numeric_array() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_num_arr_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file
+            .new_attr::<u64>()
+            .shape((1, 3))
+            .create("num_arr")
+            .unwrap();
+
+        let arr = array![[1u64, 2, 3]];
+        attr.as_writer().write(&arr).unwrap();
+
+        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+        let expected = "[\n  [1, 2, 3]\n]";
+        assert_eq!(formatted, expected);
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
 }
