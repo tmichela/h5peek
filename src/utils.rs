@@ -1,8 +1,8 @@
 use hdf5::Datatype;
 use hdf5::H5Type;
 use hdf5::types::{TypeDescriptor, IntSize, FloatSize, VarLenUnicode, VarLenAscii};
-use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE};
 use hdf5_sys::h5a::H5Aread;
+use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE, H5Tcopy, H5Tset_size, H5Tset_cset, H5Tset_strpad, H5Tclose, H5T_C_S1, H5T_cset_t, H5T_str_t};
 use hdf5_sys::h5p::H5P_DEFAULT;
 use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
 use std::ffi::CString;
@@ -436,6 +436,7 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
 }
 
 const MAX_ATTR_STRING_ELEMS: usize = 200;
+const MAX_ATTR_ARRAY_ELEMS: usize = 10;
 const ATTR_ARRAY_EDGE: usize = 3;
 
 
@@ -456,6 +457,9 @@ pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat, truncate_
     }
 
     if !shape.is_empty() {
+        if let Some(value) = format_numeric_attribute_array(attr, &desc, &shape, fmt) {
+            return value;
+        }
         return format!("array [{}: {}]", fmt_dtype(&dtype), fmt_shape(&shape));
     }
 
@@ -481,11 +485,50 @@ fn format_string_attribute(
     match desc {
         TypeDescriptor::VarLenAscii => format_varlen_attr::<VarLenAscii>(attr, shape, truncate_strings),
         TypeDescriptor::VarLenUnicode => format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings),
-        TypeDescriptor::FixedAscii(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings),
-        TypeDescriptor::FixedUnicode(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings),
+        TypeDescriptor::FixedAscii(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings, H5T_cset_t::H5T_CSET_ASCII)
+            .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
+        TypeDescriptor::FixedUnicode(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings, H5T_cset_t::H5T_CSET_UTF8)
+            .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
         _ => None,
     }
 }
+
+fn format_numeric_attribute_array(
+    attr: &hdf5::Attribute,
+    desc: &TypeDescriptor,
+    shape: &[usize],
+    fmt: &NumFormat,
+) -> Option<String> {
+    let total = total_size_checked(shape)?;
+    if total > MAX_ATTR_ARRAY_ELEMS {
+        return None;
+    }
+
+    match desc {
+        TypeDescriptor::Integer(_) => {
+            let arr: ArrayD<i64> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| fmt_i64(*v, fmt)).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        TypeDescriptor::Unsigned(_) => {
+            let arr: ArrayD<u64> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| fmt_u64(*v, fmt)).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        TypeDescriptor::Float(_) => {
+            let arr: ArrayD<f64> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| fmt_f64(*v, fmt)).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        TypeDescriptor::Boolean => {
+            let arr: ArrayD<bool> = attr.read_dyn().ok()?;
+            let values: Vec<String> = arr.iter().map(|v| v.to_string()).collect();
+            format_array_display(values, shape, false, MAX_ATTR_ARRAY_ELEMS)
+        }
+        _ => None,
+    }
+}
+
 
 fn format_varlen_attr<T>(attr: &hdf5::Attribute, shape: &[usize], truncate_strings: bool) -> Option<String>
 where
@@ -503,11 +546,17 @@ where
     format_string_array(values, shape)
 }
 
-fn format_fixed_string_attr(attr: &hdf5::Attribute, len: usize, shape: &[usize], truncate_strings: bool) -> Option<String> {
+fn format_fixed_string_attr(
+    attr: &hdf5::Attribute,
+    len: usize,
+    shape: &[usize],
+    truncate_strings: bool,
+    cset: H5T_cset_t,
+) -> Option<String> {
     if !shape.is_empty() && string_array_too_large(shape) {
         return None;
     }
-    let values = read_fixed_string_attr(attr, len, shape)?;
+    let values = read_fixed_string_attr(attr, len, shape, cset)?;
     if shape.is_empty() {
         return values.first().map(|v| format_scalar_string(v, truncate_strings));
     }
@@ -515,17 +564,98 @@ fn format_fixed_string_attr(attr: &hdf5::Attribute, len: usize, shape: &[usize],
     format_string_array(truncated, shape)
 }
 
-fn format_string_array(values: Vec<String>, shape: &[usize]) -> Option<String> {
+fn read_fixed_string_attr(
+    attr: &hdf5::Attribute,
+    len: usize,
+    shape: &[usize],
+    cset: H5T_cset_t,
+) -> Option<Vec<String>> {
+    let total = if shape.is_empty() { 1 } else { total_size_checked(shape)? };
+    if len == 0 {
+        return Some(vec![String::new(); total]);
+    }
+
+    let mut elem_len = len;
+    let mut buf: Vec<u8> = Vec::new();
+    let mut read_ok = false;
+
+    if let Ok(dtype) = attr.dtype() {
+        let file_len = dtype.size();
+        if file_len == 0 {
+            return Some(vec![String::new(); total]);
+        }
+        elem_len = file_len;
+        buf.resize(total.saturating_mul(elem_len), 0);
+        let status = unsafe { H5Aread(attr.id(), dtype.id(), buf.as_mut_ptr().cast()) };
+        if status >= 0 {
+            read_ok = true;
+        }
+    }
+
+    if !read_ok {
+        elem_len = len.max(1);
+        buf.resize(total.saturating_mul(elem_len), 0);
+
+        let mem_type = unsafe { H5Tcopy(*H5T_C_S1) };
+        if mem_type < 0 {
+            return None;
+        }
+        if unsafe { H5Tset_size(mem_type, elem_len as _) } < 0 {
+            unsafe { H5Tclose(mem_type) };
+            return None;
+        }
+
+        // Best-effort: some HDF5 builds reject these, but the default is fine.
+        let _ = unsafe { H5Tset_cset(mem_type, cset) };
+        let _ = unsafe { H5Tset_strpad(mem_type, H5T_str_t::H5T_STR_NULLTERM) };
+
+        let status = unsafe { H5Aread(attr.id(), mem_type, buf.as_mut_ptr().cast()) };
+        unsafe { H5Tclose(mem_type) };
+        if status < 0 {
+            return None;
+        }
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(total);
+    for i in 0..total {
+        let start = i * elem_len;
+        let end = start + elem_len;
+        if end > buf.len() {
+            return None;
+        }
+        out.push(fixed_bytes_to_string(&buf[start..end]));
+    }
+
+    Some(out)
+}
+
+fn fixed_bytes_to_string(bytes: &[u8]) -> String {
+    if let Some(end) = bytes.iter().position(|b| *b == 0) {
+        return String::from_utf8_lossy(&bytes[..end]).into_owned();
+    }
+    let mut end = bytes.len();
+    while end > 0 && bytes[end - 1] == b' ' {
+        end -= 1;
+    }
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn format_array_display(values: Vec<String>, shape: &[usize], quote_strings: bool, max_elems: usize) -> Option<String> {
     let total = total_size_checked(shape)?;
     if total != values.len() {
         return None;
     }
-    if total > MAX_ATTR_STRING_ELEMS {
+    if total > max_elems {
         return None;
     }
     let arr = ArrayD::from_shape_vec(IxDyn(shape), values).ok()?;
-    Some(format_array_with_ellipsis_display(&arr, true))
+    Some(format_array_with_ellipsis_display(&arr, quote_strings))
 }
+
+fn format_string_array(values: Vec<String>, shape: &[usize]) -> Option<String> {
+    format_array_display(values, shape, true, MAX_ATTR_STRING_ELEMS)
+}
+
 
 
 
@@ -537,37 +667,6 @@ fn string_array_too_large(shape: &[usize]) -> bool {
         Some(size) => size > MAX_ATTR_STRING_ELEMS,
         None => true,
     }
-}
-
-fn read_fixed_string_attr(
-    attr: &hdf5::Attribute,
-    len: usize,
-    shape: &[usize],
-) -> Option<Vec<String>> {
-    let dtype = attr.dtype().ok()?;
-    let total = if shape.is_empty() { 1 } else { total_size_checked(shape)? };
-    let mut buf = vec![0u8; total.saturating_mul(len)];
-    let status = unsafe { H5Aread(attr.id(), dtype.id(), buf.as_mut_ptr().cast()) };
-    if status < 0 {
-        return None;
-    }
-
-    let mut out: Vec<String> = Vec::with_capacity(total);
-    for i in 0..total {
-        let start = i * len;
-        let end = start + len;
-        if end > buf.len() {
-            return None;
-        }
-        out.push(fixed_bytes_to_string(&buf[start..end]));
-    }
-
-    Some(out)
-}
-
-fn fixed_bytes_to_string(bytes: &[u8]) -> String {
-    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 fn format_scalar_string(value: &str, truncate: bool) -> String {
@@ -970,4 +1069,31 @@ mod tests {
         drop(file);
         let _ = std::fs::remove_file(path);
     }
+
+    #[test]
+    fn test_format_attribute_value_numeric_array() {
+        use hdf5::File;
+
+        let mut path = std::env::temp_dir();
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        path.push(format!("h5peek_attr_num_arr_{}_{}.h5", std::process::id(), nanos));
+
+        let file = File::create(&path).unwrap();
+        let attr = file
+            .new_attr::<u64>()
+            .shape((1, 3))
+            .create("num_arr")
+            .unwrap();
+
+        let arr = array![[1u64, 2, 3]];
+        attr.as_writer().write(&arr).unwrap();
+
+        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+        let expected = "[\n  [1, 2, 3]\n]";
+        assert_eq!(formatted, expected);
+
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+
 }
