@@ -57,9 +57,6 @@ struct Args {
     #[arg(long, action = ArgAction::SetTrue)]
     scientific: bool,
 
-    /// Disable thousands separators in numeric output
-    #[arg(long, action = ArgAction::SetTrue)]
-    no_grouping: bool,
     /// Disable truncation for long attribute strings
     #[arg(long, action = ArgAction::SetTrue)]
     no_attr_truncate: bool,
@@ -168,9 +165,8 @@ fn main() -> Result<()> {
     let array_format = utils::NumFormat {
         precision: args.precision,
         scientific: args.scientific,
-        group_thousands: !args.no_grouping,
     };
-    let scalar_format = utils::NumFormat::scalar(!args.no_grouping);
+    let scalar_format = utils::NumFormat::scalar();
 
     let truncate_attr_strings = !args.no_attr_truncate;
 

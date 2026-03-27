@@ -11,7 +11,6 @@ use std::ffi::CString;
 pub struct NumFormat {
     pub precision: usize,
     pub scientific: bool,
-    pub group_thousands: bool,
 }
 
 impl Default for NumFormat {
@@ -19,17 +18,15 @@ impl Default for NumFormat {
         Self {
             precision: 5,
             scientific: false,
-            group_thousands: true,
         }
     }
 }
 
 impl NumFormat {
-    pub fn scalar(group_thousands: bool) -> Self {
+    pub fn scalar() -> Self {
         Self {
             precision: usize::MAX,
             scientific: false,
-            group_thousands,
         }
     }
 }
@@ -130,30 +127,12 @@ pub fn fmt_bytes(bytes: u64) -> String {
     }
 }
 
-pub fn fmt_i64(value: i64, fmt: &NumFormat) -> String {
-    if fmt.group_thousands {
-        let negative = value < 0;
-        let mut n = value as i128;
-        if negative {
-            n = -n;
-        }
-        let grouped = group_digits(&n.to_string());
-        if negative {
-            format!("-{}", grouped)
-        } else {
-            grouped
-        }
-    } else {
-        value.to_string()
-    }
+pub fn fmt_i64(value: i64, _fmt: &NumFormat) -> String {
+    value.to_string()
 }
 
-pub fn fmt_u64(value: u64, fmt: &NumFormat) -> String {
-    if fmt.group_thousands {
-        group_digits(&value.to_string())
-    } else {
-        value.to_string()
-    }
+pub fn fmt_u64(value: u64, _fmt: &NumFormat) -> String {
+    value.to_string()
 }
 
 pub fn fmt_f64(value: f64, fmt: &NumFormat) -> String {
@@ -166,42 +145,7 @@ pub fn fmt_f64(value: f64, fmt: &NumFormat) -> String {
     if fmt.scientific {
         return format!("{:.*e}", fmt.precision, value);
     }
-    let raw = format!("{:.*}", fmt.precision, value);
-    if !fmt.group_thousands {
-        return raw;
-    }
-
-    let (sign, rest) = match raw.strip_prefix('-') {
-        Some(r) => ("-", r),
-        None => ("", raw.as_str()),
-    };
-    let mut split = rest.splitn(2, '.');
-    let int_part = split.next().unwrap_or("");
-    let frac_part = split.next();
-    let grouped = group_digits(int_part);
-    match frac_part {
-        Some(frac) => format!("{}{}.{}", sign, grouped, frac),
-        None => format!("{}{}", sign, grouped),
-    }
-}
-
-fn group_digits(digits: &str) -> String {
-    if digits.len() <= 3 {
-        return digits.to_string();
-    }
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    let mut first = digits.len() % 3;
-    if first == 0 {
-        first = 3;
-    }
-    out.push_str(&digits[..first]);
-    let mut i = first;
-    while i < digits.len() {
-        out.push(',');
-        out.push_str(&digits[i..i + 3]);
-        i += 3;
-    }
-    out
+    format!("{:.*}", fmt.precision, value)
 }
 
 pub fn fmt_maxshape(shape: &[Option<usize>]) -> String {
@@ -967,16 +911,14 @@ mod tests {
         let fmt = NumFormat {
             precision: 2,
             scientific: false,
-            group_thousands: true,
         };
-        assert_eq!(fmt_i64(1234567, &fmt), "1,234,567");
+        assert_eq!(fmt_i64(1234567, &fmt), "1234567");
         assert_eq!(fmt_u64(42, &fmt), "42");
-        assert_eq!(fmt_f64(1234.5, &fmt), "1,234.50");
+        assert_eq!(fmt_f64(1234.5, &fmt), "1234.50");
 
         let fmt_scientific = NumFormat {
             precision: 3,
             scientific: true,
-            group_thousands: true,
         };
         assert_eq!(fmt_f64(1234.5, &fmt_scientific), "1.234e3");
     }
