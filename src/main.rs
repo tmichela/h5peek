@@ -10,6 +10,7 @@ mod dataset;
 mod utils;
 mod completer;
 mod slicing;
+mod plot;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

@@ -4,6 +4,8 @@ use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode, IntSize, FloatSiz
 use hdf5::types::dyn_value::DynCompound;
 use crate::utils;
 use crate::slicing;
+use crate::plot;
+use crate::plot::PlotBackend;
 use anyhow::{anyhow, Result};
 use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
 use hdf5_sys::h5d::H5Dread;
@@ -161,6 +163,7 @@ fn print_selection_int(ds: &Dataset, selection: Selection, fmt: &utils::NumForma
     let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| utils::fmt_i64(*v, fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    maybe_print_plot_from_i64(&arr);
     Ok(())
 }
 
@@ -168,6 +171,7 @@ fn print_selection_uint(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
     let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| utils::fmt_u64(*v, fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    maybe_print_plot_from_u64(&arr);
     Ok(())
 }
 
@@ -175,6 +179,7 @@ fn print_selection_float(ds: &Dataset, selection: Selection, fmt: &utils::NumFor
     let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| utils::fmt_f64(*v, fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    maybe_print_plot_from_f64(&arr);
     Ok(())
 }
 
@@ -460,6 +465,37 @@ fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, i
 fn fixed_bytes_to_string(bytes: &[u8], _is_unicode: bool) -> String {
     let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn maybe_print_plot_from_i64(arr: &ArrayD<i64>) {
+    if arr.ndim() != 1 || arr.len() < 2 {
+        return;
+    }
+    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
+    maybe_print_plot(&values);
+}
+
+fn maybe_print_plot_from_u64(arr: &ArrayD<u64>) {
+    if arr.ndim() != 1 || arr.len() < 2 {
+        return;
+    }
+    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
+    maybe_print_plot(&values);
+}
+
+fn maybe_print_plot_from_f64(arr: &ArrayD<f64>) {
+    if arr.ndim() != 1 || arr.len() < 2 {
+        return;
+    }
+    let values: Vec<f64> = arr.iter().copied().collect();
+    maybe_print_plot(&values);
+}
+
+fn maybe_print_plot(values: &[f64]) {
+    if let Some(frame) = plot::default_backend().render_1d(values) {
+        println!("\nplot:");
+        println!("{frame}");
+    }
 }
 
 fn format_array_with_ellipsis<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {

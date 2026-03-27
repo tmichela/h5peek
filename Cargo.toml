@@ -28,6 +28,7 @@ regex = "1.12.2"
 rustyline = "17.0.2"
 globset = "0.4.16"
 natord = "1.0.9"
+textplots = "0.8"
 
 [dev-dependencies]
 assert_cmd = "2.0.14"
