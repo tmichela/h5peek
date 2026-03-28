@@ -4,6 +4,8 @@ use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode, IntSize, FloatSiz
 use hdf5::types::dyn_value::DynCompound;
 use crate::utils;
 use crate::slicing;
+use crate::plot;
+use crate::plot::PlotBackend;
 use anyhow::{anyhow, Result};
 use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
 use hdf5_sys::h5d::H5Dread;
@@ -83,7 +85,7 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
         println!("\nselected data [{}]:", expr);
         let selection = slicing::parse_slice(expr, &ds.shape())
             .map_err(|e| anyhow!("Error parsing slice: {}", e))?;
-        print_selection_data(ds, selection, array_fmt)
+        print_selection_data(ds, selection, array_fmt, PlotMode::Selection)
             .map_err(|e| anyhow!("Error reading sliced data: {}", e))?;
     } else if ds.ndim() == 0 {
         print_scalar(ds, scalar_fmt)?;
@@ -103,7 +105,13 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
     Ok(())
 }
 
-fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat) -> Result<()> {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlotMode {
+    Selection,
+    Disabled,
+}
+
+fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
     let dtype = ds.dtype()?;
     let desc = match dtype.to_descriptor() {
         Ok(d) => d,
@@ -125,7 +133,7 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_int(ds, selection, fmt)
+            print_selection_int(ds, selection, fmt, plot_mode)
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -133,9 +141,9 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_uint(ds, selection, fmt)
+            print_selection_uint(ds, selection, fmt, plot_mode)
         }
-        TypeDescriptor::Float(_) => print_selection_float(ds, selection, fmt),
+        TypeDescriptor::Float(_) => print_selection_float(ds, selection, fmt, plot_mode),
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
         TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
         TypeDescriptor::FixedAscii(len) => print_selection_fixed_string(ds, selection, *len, false),
@@ -157,24 +165,33 @@ where T: H5Type + std::fmt::Debug
     Ok(())
 }
 
-fn print_selection_int(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat) -> Result<()> {
+fn print_selection_int(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
     let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| utils::fmt_i64(*v, fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    if plot_mode == PlotMode::Selection {
+        maybe_print_plot_from_i64(&arr);
+    }
     Ok(())
 }
 
-fn print_selection_uint(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat) -> Result<()> {
+fn print_selection_uint(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
     let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| utils::fmt_u64(*v, fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    if plot_mode == PlotMode::Selection {
+        maybe_print_plot_from_u64(&arr);
+    }
     Ok(())
 }
 
-fn print_selection_float(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat) -> Result<()> {
+fn print_selection_float(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
     let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| utils::fmt_f64(*v, fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    if plot_mode == PlotMode::Selection {
+        maybe_print_plot_from_f64(&arr);
+    }
     Ok(())
 }
 
@@ -345,11 +362,15 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         }
         let sample_expr = sample_parts.join(",");
         if let Ok(selection) = slicing::parse_slice(&sample_expr, &shape) {
-            return print_selection_data(ds, selection, fmt);
+            print_selection_data(ds, selection, fmt, PlotMode::Disabled)?;
+            plot_full_dataset_1d(ds)?;
+            return Ok(());
         }
     }
 
-    print_selection_data(ds, Selection::new(..), fmt)
+    print_selection_data(ds, Selection::new(..), fmt, PlotMode::Disabled)?;
+    plot_full_dataset_1d(ds)?;
+    Ok(())
 }
 
 fn is_standard_int_size(size: usize) -> bool {
@@ -460,6 +481,81 @@ fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, i
 fn fixed_bytes_to_string(bytes: &[u8], _is_unicode: bool) -> String {
     let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
     String::from_utf8_lossy(&bytes[..end]).into_owned()
+}
+
+fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
+    let shape = ds.shape();
+    if shape.len() != 1 {
+        return Ok(());
+    }
+    let len = shape[0];
+    if len < 2 {
+        return Ok(());
+    }
+
+    let dtype = ds.dtype()?;
+    let desc = match dtype.to_descriptor() {
+        Ok(d) => d,
+        Err(_) => {
+            return Ok(());
+        }
+    };
+
+    match desc {
+        TypeDescriptor::Integer(_) => {
+            let size = dtype.size();
+            if !is_standard_int_size(size) {
+                return Ok(());
+            }
+            let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(Selection::new(..))?;
+            maybe_print_plot_from_i64(&arr);
+        }
+        TypeDescriptor::Unsigned(_) => {
+            let size = dtype.size();
+            if !is_standard_int_size(size) {
+                return Ok(());
+            }
+            let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(Selection::new(..))?;
+            maybe_print_plot_from_u64(&arr);
+        }
+        TypeDescriptor::Float(_) => {
+            let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(Selection::new(..))?;
+            maybe_print_plot_from_f64(&arr);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn maybe_print_plot_from_i64(arr: &ArrayD<i64>) {
+    if arr.ndim() != 1 || arr.len() < 2 {
+        return;
+    }
+    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
+    maybe_print_plot(&values);
+}
+
+fn maybe_print_plot_from_u64(arr: &ArrayD<u64>) {
+    if arr.ndim() != 1 || arr.len() < 2 {
+        return;
+    }
+    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
+    maybe_print_plot(&values);
+}
+
+fn maybe_print_plot_from_f64(arr: &ArrayD<f64>) {
+    if arr.ndim() != 1 || arr.len() < 2 {
+        return;
+    }
+    let values: Vec<f64> = arr.iter().copied().collect();
+    maybe_print_plot(&values);
+}
+
+fn maybe_print_plot(values: &[f64]) {
+    if let Some(frame) = plot::default_backend().render_1d(values) {
+        println!("\nplot:");
+        println!("{frame}");
+    }
 }
 
 fn format_array_with_ellipsis<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {
