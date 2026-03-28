@@ -74,7 +74,8 @@ fn downsample_points(series: &[f64], max_points: usize) -> Option<Vec<(f32, f32)
                 .iter()
                 .map(|(idx, value)| (*idx as f64, *value))
                 .collect();
-            lttb(&points_f64, max_points)
+            let ratio = (points_f64.len() + max_points - 1) / max_points;
+            fpcs(&points_f64, ratio.max(1))
         } else {
             samples
                 .iter()
@@ -129,66 +130,68 @@ fn downsample_points(series: &[f64], max_points: usize) -> Option<Vec<(f32, f32)
     }
 }
 
-fn lttb(points: &[(f64, f64)], threshold: usize) -> Vec<(f64, f64)> {
+fn fpcs(points: &[(f64, f64)], ratio: usize) -> Vec<(f64, f64)> {
     let n = points.len();
-    if threshold >= n || n <= 2 {
+    if n <= 2 || ratio <= 1 {
         return points.to_vec();
     }
-    if threshold == 2 {
-        return vec![points[0], points[n - 1]];
-    }
 
-    let every = (n - 2) as f64 / (threshold - 2) as f64;
-    let mut sampled: Vec<(f64, f64)> = Vec::with_capacity(threshold);
-    let mut a = 0usize;
-    sampled.push(points[a]);
+    let mut output: Vec<(f64, f64)> = Vec::new();
+    let mut potential: Option<(f64, f64)> = None;
+    let mut previous_min_flag: i8 = -1;
+    let mut counter: usize = 0;
 
-    for i in 0..(threshold - 2) {
-        let mut avg_range_start = ((i as f64 + 1.0) * every).floor() as usize + 1;
-        let mut avg_range_end = ((i as f64 + 2.0) * every).floor() as usize + 1;
-        avg_range_end = avg_range_end.min(n);
-        avg_range_start = avg_range_start.min(n - 1);
+    let first = points[0];
+    let mut max_point = first;
+    let mut min_point = first;
+    output.push(first);
+    counter += 1;
 
-        let mut avg_x = 0.0;
-        let mut avg_y = 0.0;
-        let mut avg_count = 0usize;
-        for idx in avg_range_start..avg_range_end {
-            avg_x += points[idx].0;
-            avg_y += points[idx].1;
-            avg_count += 1;
-        }
-        if avg_count == 0 {
-            avg_x = points[avg_range_start].0;
-            avg_y = points[avg_range_start].1;
-            avg_count = 1;
-        }
-        avg_x /= avg_count as f64;
-        avg_y /= avg_count as f64;
-
-        let mut range_start = ((i as f64) * every).floor() as usize + 1;
-        let mut range_end = ((i as f64 + 1.0) * every).floor() as usize + 1;
-        range_start = range_start.min(n - 2);
-        range_end = range_end.min(n - 1);
-        if range_end <= range_start {
-            range_end = (range_start + 1).min(n - 1);
+    for &p in points.iter().skip(1) {
+        counter += 1;
+        if p.1 >= max_point.1 {
+            max_point = p;
+        } else if p.1 < min_point.1 {
+            min_point = p;
         }
 
-        let mut max_area = -1.0;
-        let mut next_a = range_start;
-        for idx in range_start..range_end {
-            let (ax, ay) = points[a];
-            let (bx, by) = points[idx];
-            let area = ((ax - avg_x) * (by - ay) - (ax - bx) * (avg_y - ay)).abs();
-            if area > max_area {
-                max_area = area;
-                next_a = idx;
+        if counter >= ratio {
+            if min_point.0 < max_point.0 {
+                if previous_min_flag == 1 {
+                    if let Some(pp) = potential {
+                        if pp.0 != min_point.0 || pp.1 != min_point.1 {
+                            output.push(pp);
+                        }
+                    }
+                }
+                output.push(min_point);
+                potential = Some(max_point);
+                min_point = max_point;
+                previous_min_flag = 1;
+            } else {
+                if previous_min_flag == 0 {
+                    if let Some(pp) = potential {
+                        if pp.0 != max_point.0 || pp.1 != max_point.1 {
+                            output.push(pp);
+                        }
+                    }
+                }
+                output.push(max_point);
+                potential = Some(min_point);
+                max_point = min_point;
+                previous_min_flag = 0;
             }
+            counter = 0;
         }
-
-        sampled.push(points[next_a]);
-        a = next_a;
     }
 
-    sampled.push(points[n - 1]);
-    sampled
+    let last = points[n - 1];
+    if output
+        .last()
+        .map(|p| p.0 != last.0 || p.1 != last.1)
+        .unwrap_or(true)
+    {
+        output.push(last);
+    }
+    output
 }
