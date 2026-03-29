@@ -218,13 +218,18 @@ where T: H5Type + std::fmt::Debug
     Ok(())
 }
 
-trait NumericFormat: H5Type + Copy + Into<f64> {
+trait NumericFormat: H5Type + Copy {
     fn format_value(self, fmt: &utils::NumFormat) -> String;
+    fn to_f64(self) -> f64;
 }
 
 impl NumericFormat for i64 {
     fn format_value(self, fmt: &utils::NumFormat) -> String {
         utils::fmt_i64(self, fmt)
+    }
+
+    fn to_f64(self) -> f64 {
+        self as f64
     }
 }
 
@@ -232,11 +237,19 @@ impl NumericFormat for u64 {
     fn format_value(self, fmt: &utils::NumFormat) -> String {
         utils::fmt_u64(self, fmt)
     }
+
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
 }
 
 impl NumericFormat for f64 {
     fn format_value(self, fmt: &utils::NumFormat) -> String {
         utils::fmt_f64(self, fmt)
+    }
+
+    fn to_f64(self) -> f64 {
+        self
     }
 }
 
@@ -582,12 +595,12 @@ fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
 
 fn maybe_print_plot_from_array<T>(arr: &ArrayD<T>)
 where
-    T: Copy + Into<f64>,
+    T: NumericFormat,
 {
     if arr.ndim() != 1 || arr.len() < 2 {
         return;
     }
-    let values: Vec<f64> = arr.iter().map(|v| (*v).into()).collect();
+    let values: Vec<f64> = arr.iter().map(|v| v.to_f64()).collect();
     maybe_print_plot(&values);
 }
 
