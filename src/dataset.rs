@@ -183,7 +183,7 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_int(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<i64>(ds, selection, fmt, plot_mode)
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -191,9 +191,11 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_uint(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<u64>(ds, selection, fmt, plot_mode)
         }
-        TypeDescriptor::Float(_) => print_selection_float(ds, selection, fmt, plot_mode),
+        TypeDescriptor::Float(_) => {
+            print_selection_numeric::<f64>(ds, selection, fmt, plot_mode)
+        }
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
         TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
@@ -216,32 +218,42 @@ where T: H5Type + std::fmt::Debug
     Ok(())
 }
 
-fn print_selection_int(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
-    let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v| utils::fmt_i64(*v, fmt));
-    println!("{}", format_array_with_ellipsis_display(&s_arr, false));
-    if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_i64(&arr);
-    }
-    Ok(())
+trait NumericFormat: H5Type + Copy + Into<f64> {
+    fn format_value(self, fmt: &utils::NumFormat) -> String;
 }
 
-fn print_selection_uint(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
-    let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v| utils::fmt_u64(*v, fmt));
-    println!("{}", format_array_with_ellipsis_display(&s_arr, false));
-    if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_u64(&arr);
+impl NumericFormat for i64 {
+    fn format_value(self, fmt: &utils::NumFormat) -> String {
+        utils::fmt_i64(self, fmt)
     }
-    Ok(())
 }
 
-fn print_selection_float(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
-    let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v| utils::fmt_f64(*v, fmt));
+impl NumericFormat for u64 {
+    fn format_value(self, fmt: &utils::NumFormat) -> String {
+        utils::fmt_u64(self, fmt)
+    }
+}
+
+impl NumericFormat for f64 {
+    fn format_value(self, fmt: &utils::NumFormat) -> String {
+        utils::fmt_f64(self, fmt)
+    }
+}
+
+fn print_selection_numeric<T>(
+    ds: &Dataset,
+    selection: Selection,
+    fmt: &utils::NumFormat,
+    plot_mode: PlotMode,
+) -> Result<()>
+where
+    T: NumericFormat,
+{
+    let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
+    let s_arr = arr.map(|v| v.format_value(fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
     if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_f64(&arr);
+        maybe_print_plot_from_array(&arr);
     }
     Ok(())
 }
@@ -348,10 +360,7 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            match ds.read_scalar::<i64>() {
-                Ok(v) => println!("{}", utils::fmt_i64(v, fmt)),
-                Err(e) => println!("(failed to read scalar value: {e})"),
-            }
+            print_scalar_numeric::<i64>(ds, fmt);
         },
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -359,16 +368,10 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            match ds.read_scalar::<u64>() {
-                Ok(v) => println!("{}", utils::fmt_u64(v, fmt)),
-                Err(e) => println!("(failed to read scalar value: {e})"),
-            }
+            print_scalar_numeric::<u64>(ds, fmt);
         },
         TypeDescriptor::Float(_) => {
-             match ds.read_scalar::<f64>() {
-                 Ok(v) => println!("{}", utils::fmt_f64(v, fmt)),
-                 Err(e) => println!("(failed to read scalar value: {e})"),
-             }
+             print_scalar_numeric::<f64>(ds, fmt);
         },
         TypeDescriptor::Boolean => {
              match ds.read_scalar::<bool>() {
@@ -391,6 +394,16 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         _ => println!("(data type not supported for display)"),
     }
     Ok(())
+}
+
+fn print_scalar_numeric<T>(ds: &Dataset, fmt: &utils::NumFormat)
+where
+    T: NumericFormat,
+{
+    match ds.read_scalar::<T>() {
+        Ok(v) => println!("{}", v.format_value(fmt)),
+        Err(e) => println!("(failed to read scalar value: {e})"),
+    }
 }
 
 fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
@@ -548,7 +561,7 @@ fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
                 return Ok(());
             }
             let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_i64(&arr);
+            maybe_print_plot_from_array(&arr);
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -556,38 +569,25 @@ fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
                 return Ok(());
             }
             let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_u64(&arr);
+            maybe_print_plot_from_array(&arr);
         }
         TypeDescriptor::Float(_) => {
             let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_f64(&arr);
+            maybe_print_plot_from_array(&arr);
         }
         _ => {}
     }
     Ok(())
 }
 
-fn maybe_print_plot_from_i64(arr: &ArrayD<i64>) {
+fn maybe_print_plot_from_array<T>(arr: &ArrayD<T>)
+where
+    T: Copy + Into<f64>,
+{
     if arr.ndim() != 1 || arr.len() < 2 {
         return;
     }
-    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
-    maybe_print_plot(&values);
-}
-
-fn maybe_print_plot_from_u64(arr: &ArrayD<u64>) {
-    if arr.ndim() != 1 || arr.len() < 2 {
-        return;
-    }
-    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
-    maybe_print_plot(&values);
-}
-
-fn maybe_print_plot_from_f64(arr: &ArrayD<f64>) {
-    if arr.ndim() != 1 || arr.len() < 2 {
-        return;
-    }
-    let values: Vec<f64> = arr.iter().copied().collect();
+    let values: Vec<f64> = arr.iter().map(|v| (*v).into()).collect();
     maybe_print_plot(&values);
 }
 
