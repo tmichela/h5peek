@@ -159,49 +159,34 @@ impl<'a> TreePrinter<'a> {
 
         let show_children = self.max_depth.is_none_or(|d| depth < d);
         let show_all_children = force_show || matches_filter;
-        let mut child_entries: Vec<ChildEntry> = Vec::new();
+        let mut child_entries: Vec<Child> = Vec::new();
         if let Node::Group(g) = &node {
             if show_children {
-                let mut members = g.member_names()?;
-                if self.sort_members {
-                    members.sort_by(|a, b| compare(a, b));
-                }
-                for member_name in members {
-                    let child_full_path = join_hdf5_path(&full_path, &member_name);
-                    match utils::get_link_info(g.id(), &member_name) {
-                        utils::LinkInfo::Soft(target) => {
+                for child in self.collect_children(g, &full_path)? {
+                    match child {
+                        Child::Soft { name, target, full_path: child_full_path } => {
                             if show_all_children || filter.is_none_or(|f| f.is_match(&child_full_path)) {
-                                child_entries.push(ChildEntry::Soft { name: member_name, target });
+                                child_entries.push(Child::Soft { name, target, full_path: child_full_path });
                             }
-                            continue;
                         }
-                        utils::LinkInfo::External { file, path } => {
+                        Child::External { name, file, path, full_path: child_full_path } => {
                             if show_all_children || filter.is_none_or(|f| f.is_match(&child_full_path)) {
-                                child_entries.push(ChildEntry::External { name: member_name, file, path });
+                                child_entries.push(Child::External { name, file, path, full_path: child_full_path });
                             }
-                            continue;
                         }
-                        _ => {}
-                    }
+                        Child::Node { name, node: child_node, full_path: child_full_path } => {
+                            let child_should_print = if show_all_children {
+                                true
+                            } else if filter.is_some() {
+                                self.node_matches_or_descendant(&child_node, depth + 1)?
+                            } else {
+                                true
+                            };
 
-                    let child_node = if let Ok(cg) = g.group(&member_name) {
-                        Node::Group(cg)
-                    } else if let Ok(cd) = g.dataset(&member_name) {
-                        Node::Dataset(cd)
-                    } else {
-                        continue;
-                    };
-
-                    let child_should_print = if show_all_children {
-                        true
-                    } else if filter.is_some() {
-                        self.node_matches_or_descendant(&child_node, depth + 1)?
-                    } else {
-                        true
-                    };
-
-                    if child_should_print {
-                        child_entries.push(ChildEntry::Node { name: member_name, node: child_node });
+                            if child_should_print {
+                                child_entries.push(Child::Node { name, node: child_node, full_path: child_full_path });
+                            }
+                        }
                     }
                 }
             }
@@ -267,12 +252,12 @@ impl<'a> TreePrinter<'a> {
                     let is_last_child = i == n_members - 1;
 
                     match entry {
-                        ChildEntry::Soft { name: member_name, target } => {
+                        Child::Soft { name: member_name, target, .. } => {
                             let connector = if is_last_child { "└" } else { "├" };
                             println!("{}{}{} -> {}", child_prefix, connector, member_name.bright_magenta(), target);
                             continue;
                         }
-                        ChildEntry::External { name: member_name, file, path } => {
+                        Child::External { name: member_name, file, path, .. } => {
                             let connector = if is_last_child { "└" } else { "├" };
                             let display_target = if path.starts_with('/') {
                                 format!("{}{}", file, path)
@@ -282,7 +267,7 @@ impl<'a> TreePrinter<'a> {
                             println!("{}{}{} -> {}", child_prefix, connector, member_name.bright_magenta(), display_target);
                             continue;
                         }
-                        ChildEntry::Node { name: member_name, node: child_node } => {
+                        Child::Node { name: member_name, node: child_node, .. } => {
                             self.print_node(child_node, &member_name, &child_prefix, is_last_child, depth + 1, show_all_children)?;
                         }
                     };
@@ -323,38 +308,25 @@ impl<'a> TreePrinter<'a> {
             self.filter_guard.insert(addr);
         }
 
-        let mut members = g.member_names()?;
-        if self.sort_members {
-            members.sort_by(|a, b| compare(a, b));
-        }
-        for member_name in members {
-            let child_full_path = join_hdf5_path(&full_path, &member_name);
-            match utils::get_link_info(g.id(), &member_name) {
-                utils::LinkInfo::Soft(_) | utils::LinkInfo::External { .. } => {
+        for child in self.collect_children(g, &full_path)? {
+            match child {
+                Child::Soft { full_path: child_full_path, .. }
+                | Child::External { full_path: child_full_path, .. } => {
                     if filter.is_match(&child_full_path) {
                         if addr != 0 {
                             self.filter_guard.remove(&addr);
                         }
                         return Ok(true);
                     }
-                    continue;
                 }
-                _ => {}
-            }
-
-            let child_node = if let Ok(cg) = g.group(&member_name) {
-                Node::Group(cg)
-            } else if let Ok(cd) = g.dataset(&member_name) {
-                Node::Dataset(cd)
-            } else {
-                continue;
-            };
-
-            if self.node_matches_or_descendant(&child_node, depth + 1)? {
-                if addr != 0 {
-                    self.filter_guard.remove(&addr);
+                Child::Node { node: child_node, .. } => {
+                    if self.node_matches_or_descendant(&child_node, depth + 1)? {
+                        if addr != 0 {
+                            self.filter_guard.remove(&addr);
+                        }
+                        return Ok(true);
+                    }
                 }
-                return Ok(true);
             }
         }
 
@@ -362,6 +334,41 @@ impl<'a> TreePrinter<'a> {
             self.filter_guard.remove(&addr);
         }
         Ok(false)
+    }
+
+    fn collect_children(&self, group: &Group, parent_path: &str) -> Result<Vec<Child>> {
+        let mut members = group.member_names()?;
+        if self.sort_members {
+            members.sort_by(|a, b| compare(a, b));
+        }
+
+        let mut children = Vec::with_capacity(members.len());
+        for member_name in members {
+            let child_full_path = join_hdf5_path(parent_path, &member_name);
+            match utils::get_link_info(group.id(), &member_name) {
+                utils::LinkInfo::Soft(target) => {
+                    children.push(Child::Soft { name: member_name, target, full_path: child_full_path });
+                    continue;
+                }
+                utils::LinkInfo::External { file, path } => {
+                    children.push(Child::External { name: member_name, file, path, full_path: child_full_path });
+                    continue;
+                }
+                _ => {}
+            }
+
+            let child_node = if let Ok(cg) = group.group(&member_name) {
+                Node::Group(cg)
+            } else if let Ok(cd) = group.dataset(&member_name) {
+                Node::Dataset(cd)
+            } else {
+                continue;
+            };
+
+            children.push(Child::Node { name: member_name, node: child_node, full_path: child_full_path });
+        }
+
+        Ok(children)
     }
 }
 
@@ -386,10 +393,10 @@ fn join_hdf5_path(parent: &str, child: &str) -> String {
     }
 }
 
-enum ChildEntry {
-    Node { name: String, node: Node },
-    Soft { name: String, target: String },
-    External { name: String, file: String, path: String },
+enum Child {
+    Node { name: String, node: Node, full_path: String },
+    Soft { name: String, target: String, full_path: String },
+    External { name: String, file: String, path: String, full_path: String },
 }
 
 #[cfg(test)]
