@@ -1,9 +1,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard};
 
 use hdf5::types::FixedAscii;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static HDF5_LOCK: Mutex<()> = Mutex::new(());
+
+pub fn hdf5_lock() -> MutexGuard<'static, ()> {
+    HDF5_LOCK.lock().unwrap()
+}
 
 pub fn sample_file_path() -> PathBuf {
     std::env::set_var("HDF5_USE_FILE_LOCKING", "FALSE");

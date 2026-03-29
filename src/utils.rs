@@ -700,7 +700,15 @@ mod tests {
     use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode, FixedAscii};
     use ndarray::array;
     use std::str::FromStr;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static HDF5_LOCK: Mutex<()> = Mutex::new(());
+
+    fn with_hdf5_lock(f: impl FnOnce()) {
+        let _guard = HDF5_LOCK.lock().unwrap();
+        f();
+    }
 
     #[test]
     fn test_standard_float() {
@@ -761,26 +769,28 @@ mod tests {
 
     #[test]
     fn test_endianness_from_file() {
-        use hdf5::File;
-        use std::path::PathBuf;
-        
-        // Use the sample file we generated
-        let path = PathBuf::from("data/sample.h5");
-        if !path.exists() {
-            return; // Skip if file not found (e.g. in environments where it wasn't generated)
-        }
-        
-        let file = File::open(&path).unwrap();
-        let ds = file.dataset("custom_types/int32_be").unwrap();
-        let dtype = ds.dtype().unwrap();
-        
-        assert!(fmt_dtype(&dtype).contains("(big-endian)"));
+        with_hdf5_lock(|| {
+            use hdf5::File;
+            use std::path::PathBuf;
 
-        // Test Custom 6-byte Integer
-        if let Ok(ds_custom) = file.dataset("custom_types/int48") {
-             let dtype_custom = ds_custom.dtype().unwrap();
-             assert_eq!(fmt_dtype(&dtype_custom), "6-byte signed integer");
-        }
+            // Use the sample file we generated
+            let path = PathBuf::from("data/sample.h5");
+            if !path.exists() {
+                return; // Skip if file not found (e.g. in environments where it wasn't generated)
+            }
+
+            let file = File::open(&path).unwrap();
+            let ds = file.dataset("custom_types/int32_be").unwrap();
+            let dtype = ds.dtype().unwrap();
+
+            assert!(fmt_dtype(&dtype).contains("(big-endian)"));
+
+            // Test Custom 6-byte Integer
+            if let Ok(ds_custom) = file.dataset("custom_types/int48") {
+                let dtype_custom = ds_custom.dtype().unwrap();
+                assert_eq!(fmt_dtype(&dtype_custom), "6-byte signed integer");
+            }
+        });
     }
 
     #[test]
@@ -811,117 +821,125 @@ mod tests {
 
     #[test]
     fn test_format_attribute_value_utf8_truncation_safe() {
-        use hdf5::File;
+        with_hdf5_lock(|| {
+            use hdf5::File;
 
-        let mut path = std::env::temp_dir();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        path.push(format!("h5peek_attr_utf8_{}_{}.h5", std::process::id(), nanos));
+            let mut path = std::env::temp_dir();
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            path.push(format!("h5peek_attr_utf8_{}_{}.h5", std::process::id(), nanos));
 
-        let file = File::create(&path).unwrap();
-        let attr = file.new_attr::<VarLenUnicode>().shape(()).create("utf8_attr").unwrap();
+            let file = File::create(&path).unwrap();
+            let attr = file.new_attr::<VarLenUnicode>().shape(()).create("utf8_attr").unwrap();
 
-        let unit = "\u{00E9}";
-        let long = unit.repeat(60);
-        let v = VarLenUnicode::from_str(&long).unwrap();
-        attr.as_writer().write_scalar(&v).unwrap();
+            let unit = "\u{00E9}";
+            let long = unit.repeat(60);
+            let v = VarLenUnicode::from_str(&long).unwrap();
+            attr.as_writer().write_scalar(&v).unwrap();
 
-        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
-        let expected = format!("{}...{}", unit.repeat(10), unit.repeat(10));
-        assert_eq!(formatted, expected);
+            let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+            let expected = format!("{}...{}", unit.repeat(10), unit.repeat(10));
+            assert_eq!(formatted, expected);
 
-        drop(file);
-        let _ = std::fs::remove_file(path);
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        });
     }
 
     #[test]
     fn test_format_attribute_value_string_array_truncation_toggle() {
-        use hdf5::File;
+        with_hdf5_lock(|| {
+            use hdf5::File;
 
-        let mut path = std::env::temp_dir();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        path.push(format!("h5peek_attr_utf8_arr_{}_{}.h5", std::process::id(), nanos));
+            let mut path = std::env::temp_dir();
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            path.push(format!("h5peek_attr_utf8_arr_{}_{}.h5", std::process::id(), nanos));
 
-        let file = File::create(&path).unwrap();
-        let attr = file
-            .new_attr::<VarLenUnicode>()
-            .shape((1, 2))
-            .create("utf8_arr")
-            .unwrap();
+            let file = File::create(&path).unwrap();
+            let attr = file
+                .new_attr::<VarLenUnicode>()
+                .shape((1, 2))
+                .create("utf8_arr")
+                .unwrap();
 
-        let long = "a".repeat(60);
-        let arr = array![[
-            VarLenUnicode::from_str("alpha").unwrap(),
-            VarLenUnicode::from_str(&long).unwrap(),
-        ]];
-        attr.as_writer().write(&arr).unwrap();
+            let long = "a".repeat(60);
+            let arr = array![[
+                VarLenUnicode::from_str("alpha").unwrap(),
+                VarLenUnicode::from_str(&long).unwrap(),
+            ]];
+            attr.as_writer().write(&arr).unwrap();
 
-        let formatted_trunc = format_attribute_value(&attr, &NumFormat::default(), true);
-        let head = "a".repeat(20);
-        let tail = "a".repeat(20);
-        let expected = format!("[\n  [\"alpha\", \"{}...{}\"]\n]", head, tail);
-        assert_eq!(formatted_trunc, expected);
+            let formatted_trunc = format_attribute_value(&attr, &NumFormat::default(), true);
+            let head = "a".repeat(20);
+            let tail = "a".repeat(20);
+            let expected = format!("[\n  [\"alpha\", \"{}...{}\"]\n]", head, tail);
+            assert_eq!(formatted_trunc, expected);
 
-        let formatted_full = format_attribute_value(&attr, &NumFormat::default(), false);
-        assert!(formatted_full.contains(&long));
-        assert!(!formatted_full.contains("..."));
+            let formatted_full = format_attribute_value(&attr, &NumFormat::default(), false);
+            assert!(formatted_full.contains(&long));
+            assert!(!formatted_full.contains("..."));
 
-        drop(file);
-        let _ = std::fs::remove_file(path);
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        });
     }
 
     #[test]
     fn test_format_attribute_value_fixed_ascii_array() {
-        use hdf5::File;
+        with_hdf5_lock(|| {
+            use hdf5::File;
 
-        let mut path = std::env::temp_dir();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        path.push(format!("h5peek_attr_ascii_arr_{}_{}.h5", std::process::id(), nanos));
+            let mut path = std::env::temp_dir();
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            path.push(format!("h5peek_attr_ascii_arr_{}_{}.h5", std::process::id(), nanos));
 
-        let file = File::create(&path).unwrap();
-        let attr = file
-            .new_attr::<FixedAscii<8>>()
-            .shape((1, 2))
-            .create("ascii_arr")
-            .unwrap();
+            let file = File::create(&path).unwrap();
+            let attr = file
+                .new_attr::<FixedAscii<8>>()
+                .shape((1, 2))
+                .create("ascii_arr")
+                .unwrap();
 
-        let arr = array![[
-            FixedAscii::<8>::from_ascii(b"foo").unwrap(),
-            FixedAscii::<8>::from_ascii(b"bar").unwrap(),
-        ]];
-        attr.as_writer().write(&arr).unwrap();
+            let arr = array![[
+                FixedAscii::<8>::from_ascii(b"foo").unwrap(),
+                FixedAscii::<8>::from_ascii(b"bar").unwrap(),
+            ]];
+            attr.as_writer().write(&arr).unwrap();
 
-        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
-        let expected = "[\n  [\"foo\", \"bar\"]\n]";
-        assert_eq!(formatted, expected);
+            let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+            let expected = "[\n  [\"foo\", \"bar\"]\n]";
+            assert_eq!(formatted, expected);
 
-        drop(file);
-        let _ = std::fs::remove_file(path);
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        });
     }
 
     #[test]
     fn test_format_attribute_value_numeric_array() {
-        use hdf5::File;
+        with_hdf5_lock(|| {
+            use hdf5::File;
 
-        let mut path = std::env::temp_dir();
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        path.push(format!("h5peek_attr_num_arr_{}_{}.h5", std::process::id(), nanos));
+            let mut path = std::env::temp_dir();
+            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+            path.push(format!("h5peek_attr_num_arr_{}_{}.h5", std::process::id(), nanos));
 
-        let file = File::create(&path).unwrap();
-        let attr = file
-            .new_attr::<u64>()
-            .shape((1, 3))
-            .create("num_arr")
-            .unwrap();
+            let file = File::create(&path).unwrap();
+            let attr = file
+                .new_attr::<u64>()
+                .shape((1, 3))
+                .create("num_arr")
+                .unwrap();
 
-        let arr = array![[1u64, 2, 3]];
-        attr.as_writer().write(&arr).unwrap();
+            let arr = array![[1u64, 2, 3]];
+            attr.as_writer().write(&arr).unwrap();
 
-        let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
-        let expected = "[\n  [1, 2, 3]\n]";
-        assert_eq!(formatted, expected);
+            let formatted = format_attribute_value(&attr, &NumFormat::default(), true);
+            let expected = "[\n  [1, 2, 3]\n]";
+            assert_eq!(formatted, expected);
 
-        drop(file);
-        let _ = std::fs::remove_file(path);
+            drop(file);
+            let _ = std::fs::remove_file(path);
+        });
     }
 
 }
