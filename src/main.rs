@@ -11,6 +11,7 @@ mod utils;
 mod completer;
 mod slicing;
 mod plot;
+mod array_format;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]

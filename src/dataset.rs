@@ -6,8 +6,9 @@ use crate::utils;
 use crate::slicing;
 use crate::plot;
 use crate::plot::PlotBackend;
+use crate::array_format::{self, EllipsisConfig};
 use anyhow::{anyhow, Result};
-use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
+use ndarray::{ArrayD, IxDyn};
 use hdf5_sys::h5d::H5Dread;
 use hdf5_sys::h5p::H5P_DEFAULT;
 use hdf5_sys::h5t::{H5Tget_class, H5T_INTEGER};
@@ -16,29 +17,47 @@ const MAX_ARRAY_ELEMS: usize = 200;
 const ARRAY_EDGE: usize = 3;
 const MAX_COMPOUND_ROWS: usize = 20;
 const COMPOUND_EDGE: usize = 5;
+const ARRAY_FORMAT: EllipsisConfig = EllipsisConfig { max_elems: MAX_ARRAY_ELEMS, edge: ARRAY_EDGE };
 
 pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &utils::NumFormat, scalar_fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<()> {
     let dtype = ds.dtype()?;
     let desc = dtype.to_descriptor().ok();
     let shape = ds.shape();
-    println!("      dtype: {}", utils::fmt_dtype(&dtype));
-    println!("      shape: {}", utils::fmt_shape(&shape));
+    let storage_bytes = ds.storage_size();
+    print_dataset_summary(&dtype, desc.as_ref(), &shape, storage_bytes, scalar_fmt);
+    print_dataset_maxshape(ds, &shape)?;
+    print_dataset_layout(ds)?;
+    print_dataset_preview(ds, slice_expr, array_fmt, scalar_fmt)?;
+    print_dataset_attrs(ds, scalar_fmt, truncate_attr_strings)?;
+    Ok(())
+}
 
-    let elem_count = if shape.is_empty() {
-        Some(1u64)
-    } else {
-        shape.iter().try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
-    };
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlotMode {
+    Selection,
+    Disabled,
+}
+
+fn print_dataset_summary(
+    dtype: &hdf5::Datatype,
+    desc: Option<&TypeDescriptor>,
+    shape: &[usize],
+    storage_bytes: u64,
+    scalar_fmt: &utils::NumFormat,
+) {
+    println!("      dtype: {}", utils::fmt_dtype(dtype));
+    println!("      shape: {}", utils::fmt_shape(shape));
+
+    let elem_count = elem_count_u64(shape);
     match elem_count {
         Some(count) => println!("   elements: {}", utils::fmt_u64(count, scalar_fmt)),
         None => println!("   elements: (too large)"),
     }
 
-    let storage_bytes = ds.storage_size();
     println!("    storage: {}", utils::fmt_bytes(storage_bytes));
 
     if let Some(desc) = desc {
-        if !descriptor_has_vlen(&desc) {
+        if !descriptor_has_vlen(desc) {
             match elem_count.and_then(|count| count.checked_mul(dtype.size() as u64)) {
                 Some(logical_bytes) => {
                     println!("logical size: {}", utils::fmt_bytes(logical_bytes));
@@ -53,34 +72,50 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
             println!("logical size: (variable-length)");
         }
     }
-    
+}
+
+fn print_dataset_maxshape(ds: &Dataset, shape: &[usize]) -> Result<()> {
     if let Ok(space) = ds.space() {
         let maxshape = space.maxdims();
-        let current_shape = &shape;
-        let different = maxshape.len() != current_shape.len() || 
-                        maxshape.iter().zip(current_shape.iter()).any(|(m, s)| m.is_none_or(|mv| mv != *s));
-        
+        let current_shape = shape;
+        let different = maxshape.len() != current_shape.len()
+            || maxshape
+                .iter()
+                .zip(current_shape.iter())
+                .any(|(m, s)| m.is_none_or(|mv| mv != *s));
+
         if different {
             println!("   maxshape: {}", utils::fmt_maxshape(&maxshape));
         }
     }
+    Ok(())
+}
 
+fn print_dataset_layout(ds: &Dataset) -> Result<()> {
     let create_plist = ds.create_plist()?;
     let layout = create_plist.layout();
     println!("     layout: {:?}", layout);
 
     if layout == Layout::Chunked {
         if let Some(chunks) = create_plist.chunk() {
-             println!("      chunk: {}", utils::fmt_shape(&chunks));
+            println!("      chunk: {}", utils::fmt_shape(&chunks));
         }
-        
+
         let filters = create_plist.filters();
         if !filters.is_empty() {
-             let filter_strs: Vec<String> = filters.iter().map(|f| format!("{:?}", f)).collect();
-             println!("compression: {}", filter_strs.join(", "));
+            let filter_strs: Vec<String> = filters.iter().map(|f| format!("{:?}", f)).collect();
+            println!("compression: {}", filter_strs.join(", "));
         }
     }
+    Ok(())
+}
 
+fn print_dataset_preview(
+    ds: &Dataset,
+    slice_expr: Option<&str>,
+    array_fmt: &utils::NumFormat,
+    scalar_fmt: &utils::NumFormat,
+) -> Result<()> {
     if let Some(expr) = slice_expr {
         println!("\nselected data [{}]:", expr);
         let selection = slicing::parse_slice(expr, &ds.shape())
@@ -95,20 +130,35 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
             println!("(error reading sample data: {})", e);
         }
     }
+    Ok(())
+}
 
+fn print_dataset_attrs(
+    ds: &Dataset,
+    scalar_fmt: &utils::NumFormat,
+    truncate_attr_strings: bool,
+) -> Result<()> {
     let attr_names = ds.attr_names()?;
     println!("\n{} attributes:", attr_names.len());
     for name in attr_names {
         let attr = ds.attr(&name)?;
-        println!("* {}: {}", name, utils::format_attribute_value(&attr, scalar_fmt, truncate_attr_strings));
+        println!(
+            "* {}: {}",
+            name,
+            utils::format_attribute_value(&attr, scalar_fmt, truncate_attr_strings)
+        );
     }
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlotMode {
-    Selection,
-    Disabled,
+fn elem_count_u64(shape: &[usize]) -> Option<u64> {
+    if shape.is_empty() {
+        Some(1u64)
+    } else {
+        shape
+            .iter()
+            .try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
+    }
 }
 
 fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
@@ -133,7 +183,7 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_int(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<i64>(ds, selection, fmt, plot_mode)
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -141,13 +191,16 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_uint(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<u64>(ds, selection, fmt, plot_mode)
         }
-        TypeDescriptor::Float(_) => print_selection_float(ds, selection, fmt, plot_mode),
+        TypeDescriptor::Float(_) => {
+            print_selection_numeric::<f64>(ds, selection, fmt, plot_mode)
+        }
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
         TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
-        TypeDescriptor::FixedAscii(len) => print_selection_fixed_string(ds, selection, *len, false),
-        TypeDescriptor::FixedUnicode(len) => print_selection_fixed_string(ds, selection, *len, true),
+        TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
+            print_selection_fixed_string(ds, selection, *len)
+        }
         TypeDescriptor::Compound(compound) => print_selection_compound(ds, selection, compound),
         _ => {
             println!("(data type not supported for display)");
@@ -165,32 +218,55 @@ where T: H5Type + std::fmt::Debug
     Ok(())
 }
 
-fn print_selection_int(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
-    let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v| utils::fmt_i64(*v, fmt));
-    println!("{}", format_array_with_ellipsis_display(&s_arr, false));
-    if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_i64(&arr);
-    }
-    Ok(())
+trait NumericFormat: H5Type + Copy {
+    fn format_value(self, fmt: &utils::NumFormat) -> String;
+    fn to_f64(self) -> f64;
 }
 
-fn print_selection_uint(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
-    let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v| utils::fmt_u64(*v, fmt));
-    println!("{}", format_array_with_ellipsis_display(&s_arr, false));
-    if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_u64(&arr);
+impl NumericFormat for i64 {
+    fn format_value(self, fmt: &utils::NumFormat) -> String {
+        utils::fmt_i64(self, fmt)
     }
-    Ok(())
+
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
 }
 
-fn print_selection_float(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
-    let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v| utils::fmt_f64(*v, fmt));
+impl NumericFormat for u64 {
+    fn format_value(self, fmt: &utils::NumFormat) -> String {
+        utils::fmt_u64(self, fmt)
+    }
+
+    fn to_f64(self) -> f64 {
+        self as f64
+    }
+}
+
+impl NumericFormat for f64 {
+    fn format_value(self, fmt: &utils::NumFormat) -> String {
+        utils::fmt_f64(self, fmt)
+    }
+
+    fn to_f64(self) -> f64 {
+        self
+    }
+}
+
+fn print_selection_numeric<T>(
+    ds: &Dataset,
+    selection: Selection,
+    fmt: &utils::NumFormat,
+    plot_mode: PlotMode,
+) -> Result<()>
+where
+    T: NumericFormat,
+{
+    let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
+    let s_arr = arr.map(|v| v.format_value(fmt));
     println!("{}", format_array_with_ellipsis_display(&s_arr, false));
     if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_f64(&arr);
+        maybe_print_plot_from_array(&arr);
     }
     Ok(())
 }
@@ -202,8 +278,8 @@ fn print_selection_string(ds: &Dataset, selection: Selection) -> Result<()> {
     Ok(())
 }
 
-fn print_selection_fixed_string(ds: &Dataset, selection: Selection, len: usize, is_unicode: bool) -> Result<()> {
-    let arr = read_fixed_string_selection(ds, selection, len, is_unicode)?;
+fn print_selection_fixed_string(ds: &Dataset, selection: Selection, len: usize) -> Result<()> {
+    let arr = read_fixed_string_selection(ds, selection, len)?;
     println!("{}", format_array_with_ellipsis_display(&arr, true));
     Ok(())
 }
@@ -297,10 +373,7 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            match ds.read_scalar::<i64>() {
-                Ok(v) => println!("{}", utils::fmt_i64(v, fmt)),
-                Err(e) => println!("(failed to read scalar value: {e})"),
-            }
+            print_scalar_numeric::<i64>(ds, fmt);
         },
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -308,16 +381,10 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            match ds.read_scalar::<u64>() {
-                Ok(v) => println!("{}", utils::fmt_u64(v, fmt)),
-                Err(e) => println!("(failed to read scalar value: {e})"),
-            }
+            print_scalar_numeric::<u64>(ds, fmt);
         },
         TypeDescriptor::Float(_) => {
-             match ds.read_scalar::<f64>() {
-                 Ok(v) => println!("{}", utils::fmt_f64(v, fmt)),
-                 Err(e) => println!("(failed to read scalar value: {e})"),
-             }
+             print_scalar_numeric::<f64>(ds, fmt);
         },
         TypeDescriptor::Boolean => {
              match ds.read_scalar::<bool>() {
@@ -331,14 +398,8 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                  Err(e) => println!("(failed to read scalar value: {e})"),
              }
         },
-        TypeDescriptor::FixedAscii(len) => {
-            match read_fixed_string_scalar(ds, len, false) {
-                Ok(value) => println!("{}", value),
-                Err(e) => println!("(failed to read scalar value: {e})"),
-            }
-        }
-        TypeDescriptor::FixedUnicode(len) => {
-            match read_fixed_string_scalar(ds, len, true) {
+        TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
+            match read_fixed_string_scalar(ds, len) {
                 Ok(value) => println!("{}", value),
                 Err(e) => println!("(failed to read scalar value: {e})"),
             }
@@ -346,6 +407,16 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         _ => println!("(data type not supported for display)"),
     }
     Ok(())
+}
+
+fn print_scalar_numeric<T>(ds: &Dataset, fmt: &utils::NumFormat)
+where
+    T: NumericFormat,
+{
+    match ds.read_scalar::<T>() {
+        Ok(v) => println!("{}", v.format_value(fmt)),
+        Err(e) => println!("(failed to read scalar value: {e})"),
+    }
 }
 
 fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
@@ -435,12 +506,12 @@ fn compound_alignment_safe(compound: &CompoundType) -> bool {
     true
 }
 
-fn read_fixed_string_scalar(ds: &Dataset, len: usize, is_unicode: bool) -> Result<String> {
-    let arr = read_fixed_string_selection(ds, Selection::new(..), len, is_unicode)?;
+fn read_fixed_string_scalar(ds: &Dataset, len: usize) -> Result<String> {
+    let arr = read_fixed_string_selection(ds, Selection::new(..), len)?;
     Ok(arr.first().cloned().unwrap_or_default())
 }
 
-fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, is_unicode: bool) -> Result<ArrayD<String>> {
+fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize) -> Result<ArrayD<String>> {
     let dtype = ds.dtype()?;
     let obj_space = ds.space()?;
     let out_shape = selection.out_shape(obj_space.shape())?;
@@ -472,15 +543,10 @@ fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, i
         let start = i * len;
         let end = start + len;
         let slice = &buf[start..end];
-        out.push(fixed_bytes_to_string(slice, is_unicode));
+        out.push(utils::decode_fixed_bytes(slice, false));
     }
 
     ArrayD::from_shape_vec(IxDyn(&out_shape), out).map_err(|e| anyhow!(e))
-}
-
-fn fixed_bytes_to_string(bytes: &[u8], _is_unicode: bool) -> String {
-    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
@@ -508,7 +574,7 @@ fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
                 return Ok(());
             }
             let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_i64(&arr);
+            maybe_print_plot_from_array(&arr);
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -516,38 +582,25 @@ fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
                 return Ok(());
             }
             let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_u64(&arr);
+            maybe_print_plot_from_array(&arr);
         }
         TypeDescriptor::Float(_) => {
             let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_f64(&arr);
+            maybe_print_plot_from_array(&arr);
         }
         _ => {}
     }
     Ok(())
 }
 
-fn maybe_print_plot_from_i64(arr: &ArrayD<i64>) {
+fn maybe_print_plot_from_array<T>(arr: &ArrayD<T>)
+where
+    T: NumericFormat,
+{
     if arr.ndim() != 1 || arr.len() < 2 {
         return;
     }
-    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
-    maybe_print_plot(&values);
-}
-
-fn maybe_print_plot_from_u64(arr: &ArrayD<u64>) {
-    if arr.ndim() != 1 || arr.len() < 2 {
-        return;
-    }
-    let values: Vec<f64> = arr.iter().map(|v| *v as f64).collect();
-    maybe_print_plot(&values);
-}
-
-fn maybe_print_plot_from_f64(arr: &ArrayD<f64>) {
-    if arr.ndim() != 1 || arr.len() < 2 {
-        return;
-    }
-    let values: Vec<f64> = arr.iter().copied().collect();
+    let values: Vec<f64> = arr.iter().map(|v| v.to_f64()).collect();
     maybe_print_plot(&values);
 }
 
@@ -559,159 +612,11 @@ fn maybe_print_plot(values: &[f64]) {
 }
 
 fn format_array_with_ellipsis<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {
-    if arr.is_empty() {
-        return "[]".to_string();
-    }
-    let needs_ellipsis = arr.len() > MAX_ARRAY_ELEMS
-        || arr.shape().iter().any(|&d| d > ARRAY_EDGE * 2);
-    if !needs_ellipsis {
-        return format!("{:?}", arr);
-    }
-    format_array_view_with_ellipsis(arr.view(), ARRAY_EDGE)
+    array_format::format_debug_with_ellipsis(arr, ARRAY_FORMAT)
 }
 
 fn format_array_with_ellipsis_display(arr: &ArrayD<String>, quote_strings: bool) -> String {
-    if arr.is_empty() {
-        return "[]".to_string();
-    }
-    let needs_ellipsis = arr.len() > MAX_ARRAY_ELEMS
-        || arr.shape().iter().any(|&d| d > ARRAY_EDGE * 2);
-    if !needs_ellipsis {
-        return format_array_view_display(arr.view(), quote_strings);
-    }
-    format_array_view_with_ellipsis_display(arr.view(), ARRAY_EDGE, quote_strings)
-}
-
-#[derive(Clone, Copy)]
-enum AxisItem {
-    Index(usize),
-    Ellipsis,
-}
-
-fn axis_indices(len: usize, edge: usize) -> Vec<AxisItem> {
-    if len <= edge * 2 {
-        return (0..len).map(AxisItem::Index).collect();
-    }
-    let mut out = Vec::with_capacity(edge * 2 + 1);
-    for i in 0..edge {
-        out.push(AxisItem::Index(i));
-    }
-    out.push(AxisItem::Ellipsis);
-    for i in (len - edge)..len {
-        out.push(AxisItem::Index(i));
-    }
-    out
-}
-
-fn format_array_view_with_ellipsis<T: std::fmt::Debug>(view: ArrayViewD<T>, edge: usize) -> String {
-    match view.ndim() {
-        0 => format!("{:?}", view.first().unwrap()),
-        1 => {
-            let mut parts = Vec::new();
-            for item in axis_indices(view.shape()[0], edge) {
-                match item {
-                    AxisItem::Index(i) => {
-                        let v = view.index_axis(Axis(0), i);
-                        parts.push(format!("{:?}", v.first().unwrap()));
-                    }
-                    AxisItem::Ellipsis => parts.push("...".to_string()),
-                }
-            }
-            format!("[{}]", parts.join(", "))
-        }
-        _ => {
-            let mut parts = Vec::new();
-            for item in axis_indices(view.shape()[0], edge) {
-                match item {
-                    AxisItem::Index(i) => {
-                        let v = view.index_axis(Axis(0), i);
-                        parts.push(format_array_view_with_ellipsis(v.into_dyn(), edge));
-                    }
-                    AxisItem::Ellipsis => parts.push("...".to_string()),
-                }
-            }
-            format!("[{}]", parts.join(", "))
-        }
-    }
-}
-
-fn format_array_view_with_ellipsis_display(view: ArrayViewD<String>, edge: usize, quote_strings: bool) -> String {
-    match view.ndim() {
-        0 => view.first().map(|v| format_string_element(v, quote_strings)).unwrap_or_default(),
-        1 => {
-            let mut parts = Vec::new();
-            for item in axis_indices(view.shape()[0], edge) {
-                match item {
-                    AxisItem::Index(i) => {
-                        let v = view.index_axis(Axis(0), i);
-                        parts.push(v.first().map(|s| format_string_element(s, quote_strings)).unwrap_or_default());
-                    }
-                    AxisItem::Ellipsis => parts.push("...".to_string()),
-                }
-            }
-            format!("[{}]", parts.join(", "))
-        }
-        _ => {
-            let mut parts = Vec::new();
-            for item in axis_indices(view.shape()[0], edge) {
-                match item {
-                    AxisItem::Index(i) => {
-                        let v = view.index_axis(Axis(0), i);
-                        parts.push(format_array_view_with_ellipsis_display(v.into_dyn(), edge, quote_strings));
-                    }
-                    AxisItem::Ellipsis => parts.push("...".to_string()),
-                }
-            }
-            format_multiline_list(&parts)
-        }
-    }
-}
-
-fn format_array_view_display(view: ArrayViewD<String>, quote_strings: bool) -> String {
-    match view.ndim() {
-        0 => view.first().map(|v| format_string_element(v, quote_strings)).unwrap_or_default(),
-        1 => {
-            let mut parts = Vec::new();
-            for i in 0..view.shape()[0] {
-                let v = view.index_axis(Axis(0), i);
-                parts.push(v.first().map(|s| format_string_element(s, quote_strings)).unwrap_or_default());
-            }
-            format!("[{}]", parts.join(", "))
-        }
-        _ => {
-            let mut parts = Vec::new();
-            for i in 0..view.shape()[0] {
-                let v = view.index_axis(Axis(0), i);
-                parts.push(format_array_view_display(v.into_dyn(), quote_strings));
-            }
-            format_multiline_list(&parts)
-        }
-    }
-}
-
-fn format_string_element(value: &str, quote_strings: bool) -> String {
-    if quote_strings {
-        format!("{:?}", value)
-    } else {
-        value.to_string()
-    }
-}
-
-fn format_multiline_list(parts: &[String]) -> String {
-    if parts.is_empty() {
-        return "[]".to_string();
-    }
-    let indented: Vec<String> = parts.iter().map(|p| indent_lines(p, 2)).collect();
-    format!("[\n{}\n]", indented.join(",\n"))
-}
-
-fn indent_lines(value: &str, spaces: usize) -> String {
-    let prefix = " ".repeat(spaces);
-    value
-        .lines()
-        .map(|line| format!("{prefix}{line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
+    array_format::format_string_array_with_ellipsis(arr, ARRAY_FORMAT, quote_strings)
 }
 
 fn compound_has_vlen(compound: &CompoundType) -> bool {
