@@ -569,19 +569,21 @@ fn read_fixed_string_attr(
         if end > buf.len() {
             return None;
         }
-        out.push(fixed_bytes_to_string(&buf[start..end]));
+        out.push(decode_fixed_bytes(&buf[start..end], true));
     }
 
     Some(out)
 }
 
-fn fixed_bytes_to_string(bytes: &[u8]) -> String {
+pub(crate) fn decode_fixed_bytes(bytes: &[u8], trim_spaces: bool) -> String {
     if let Some(end) = bytes.iter().position(|b| *b == 0) {
         return String::from_utf8_lossy(&bytes[..end]).into_owned();
     }
     let mut end = bytes.len();
-    while end > 0 && bytes[end - 1] == b' ' {
-        end -= 1;
+    if trim_spaces {
+        while end > 0 && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
     }
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }

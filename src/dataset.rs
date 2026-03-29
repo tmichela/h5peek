@@ -148,8 +148,9 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
         TypeDescriptor::Float(_) => print_selection_float(ds, selection, fmt, plot_mode),
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
         TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
-        TypeDescriptor::FixedAscii(len) => print_selection_fixed_string(ds, selection, *len, false),
-        TypeDescriptor::FixedUnicode(len) => print_selection_fixed_string(ds, selection, *len, true),
+        TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
+            print_selection_fixed_string(ds, selection, *len)
+        }
         TypeDescriptor::Compound(compound) => print_selection_compound(ds, selection, compound),
         _ => {
             println!("(data type not supported for display)");
@@ -204,8 +205,8 @@ fn print_selection_string(ds: &Dataset, selection: Selection) -> Result<()> {
     Ok(())
 }
 
-fn print_selection_fixed_string(ds: &Dataset, selection: Selection, len: usize, is_unicode: bool) -> Result<()> {
-    let arr = read_fixed_string_selection(ds, selection, len, is_unicode)?;
+fn print_selection_fixed_string(ds: &Dataset, selection: Selection, len: usize) -> Result<()> {
+    let arr = read_fixed_string_selection(ds, selection, len)?;
     println!("{}", format_array_with_ellipsis_display(&arr, true));
     Ok(())
 }
@@ -333,14 +334,8 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                  Err(e) => println!("(failed to read scalar value: {e})"),
              }
         },
-        TypeDescriptor::FixedAscii(len) => {
-            match read_fixed_string_scalar(ds, len, false) {
-                Ok(value) => println!("{}", value),
-                Err(e) => println!("(failed to read scalar value: {e})"),
-            }
-        }
-        TypeDescriptor::FixedUnicode(len) => {
-            match read_fixed_string_scalar(ds, len, true) {
+        TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
+            match read_fixed_string_scalar(ds, len) {
                 Ok(value) => println!("{}", value),
                 Err(e) => println!("(failed to read scalar value: {e})"),
             }
@@ -437,12 +432,12 @@ fn compound_alignment_safe(compound: &CompoundType) -> bool {
     true
 }
 
-fn read_fixed_string_scalar(ds: &Dataset, len: usize, is_unicode: bool) -> Result<String> {
-    let arr = read_fixed_string_selection(ds, Selection::new(..), len, is_unicode)?;
+fn read_fixed_string_scalar(ds: &Dataset, len: usize) -> Result<String> {
+    let arr = read_fixed_string_selection(ds, Selection::new(..), len)?;
     Ok(arr.first().cloned().unwrap_or_default())
 }
 
-fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, is_unicode: bool) -> Result<ArrayD<String>> {
+fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize) -> Result<ArrayD<String>> {
     let dtype = ds.dtype()?;
     let obj_space = ds.space()?;
     let out_shape = selection.out_shape(obj_space.shape())?;
@@ -474,15 +469,10 @@ fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize, i
         let start = i * len;
         let end = start + len;
         let slice = &buf[start..end];
-        out.push(fixed_bytes_to_string(slice, is_unicode));
+        out.push(utils::decode_fixed_bytes(slice, false));
     }
 
     ArrayD::from_shape_vec(IxDyn(&out_shape), out).map_err(|e| anyhow!(e))
-}
-
-fn fixed_bytes_to_string(bytes: &[u8], _is_unicode: bool) -> String {
-    let end = bytes.iter().position(|b| *b == 0).unwrap_or(bytes.len());
-    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
