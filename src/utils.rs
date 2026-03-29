@@ -4,8 +4,9 @@ use hdf5::types::{TypeDescriptor, IntSize, FloatSize, VarLenUnicode, VarLenAscii
 use hdf5_sys::h5a::H5Aread;
 use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE, H5Tcopy, H5Tset_size, H5Tset_cset, H5Tset_strpad, H5Tclose, H5T_C_S1, H5T_cset_t, H5T_str_t};
 use hdf5_sys::h5p::H5P_DEFAULT;
-use ndarray::{ArrayD, ArrayViewD, Axis, IxDyn};
+use ndarray::{ArrayD, IxDyn};
 use std::ffi::CString;
+use crate::array_format::{self, EllipsisConfig};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NumFormat {
@@ -382,6 +383,7 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
 const MAX_ATTR_STRING_ELEMS: usize = 200;
 const MAX_ATTR_ARRAY_ELEMS: usize = 10;
 const ATTR_ARRAY_EDGE: usize = 3;
+const ATTR_ARRAY_FORMAT: EllipsisConfig = EllipsisConfig { max_elems: MAX_ATTR_STRING_ELEMS, edge: ATTR_ARRAY_EDGE };
 
 
 pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat, truncate_strings: bool) -> String {
@@ -593,7 +595,7 @@ fn format_array_display(values: Vec<String>, shape: &[usize], quote_strings: boo
         return None;
     }
     let arr = ArrayD::from_shape_vec(IxDyn(shape), values).ok()?;
-    Some(format_array_with_ellipsis_display(&arr, quote_strings))
+    Some(array_format::format_string_array_with_ellipsis(&arr, ATTR_ARRAY_FORMAT, quote_strings))
 }
 
 fn format_string_array(values: Vec<String>, shape: &[usize]) -> Option<String> {
@@ -637,124 +639,6 @@ fn maybe_truncate_string(value: &str, truncate: bool) -> String {
 
 fn total_size_checked(shape: &[usize]) -> Option<usize> {
     shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d))
-}
-
-#[derive(Clone, Copy)]
-enum AxisItem {
-    Index(usize),
-    Ellipsis,
-}
-
-fn axis_indices(len: usize, edge: usize) -> Vec<AxisItem> {
-    if len <= edge * 2 {
-        return (0..len).map(AxisItem::Index).collect();
-    }
-    let mut out = Vec::with_capacity(edge * 2 + 1);
-    for i in 0..edge {
-        out.push(AxisItem::Index(i));
-    }
-    out.push(AxisItem::Ellipsis);
-    for i in (len - edge)..len {
-        out.push(AxisItem::Index(i));
-    }
-    out
-}
-
-fn format_array_with_ellipsis_display(arr: &ArrayD<String>, quote_strings: bool) -> String {
-    if arr.is_empty() {
-        return "[]".to_string();
-    }
-    let needs_ellipsis = arr.len() > MAX_ATTR_STRING_ELEMS
-        || arr.shape().iter().any(|&d| d > ATTR_ARRAY_EDGE * 2);
-    if !needs_ellipsis {
-        return format_array_view_display(arr.view(), quote_strings);
-    }
-    format_array_view_with_ellipsis_display(arr.view(), ATTR_ARRAY_EDGE, quote_strings)
-}
-
-fn format_array_view_with_ellipsis_display(
-    view: ArrayViewD<String>,
-    edge: usize,
-    quote_strings: bool,
-) -> String {
-    match view.ndim() {
-        0 => view.first().map(|v| format_string_element(v, quote_strings)).unwrap_or_default(),
-        1 => {
-            let mut parts = Vec::new();
-            for item in axis_indices(view.shape()[0], edge) {
-                match item {
-                    AxisItem::Index(i) => {
-                        let v = view.index_axis(Axis(0), i);
-                        parts.push(v.first().map(|s| format_string_element(s, quote_strings)).unwrap_or_default());
-                    }
-                    AxisItem::Ellipsis => parts.push("...".to_string()),
-                }
-            }
-            format!("[{}]", parts.join(", "))
-        }
-        _ => {
-            let mut parts = Vec::new();
-            for item in axis_indices(view.shape()[0], edge) {
-                match item {
-                    AxisItem::Index(i) => {
-                        let v = view.index_axis(Axis(0), i);
-                        parts.push(format_array_view_with_ellipsis_display(v.into_dyn(), edge, quote_strings));
-                    }
-                    AxisItem::Ellipsis => parts.push("...".to_string()),
-                }
-            }
-            format_multiline_list(&parts)
-        }
-    }
-}
-
-fn format_array_view_display(view: ArrayViewD<String>, quote_strings: bool) -> String {
-    match view.ndim() {
-        0 => view.first().map(|v| format_string_element(v, quote_strings)).unwrap_or_default(),
-        1 => {
-            let mut parts = Vec::new();
-            for i in 0..view.shape()[0] {
-                let v = view.index_axis(Axis(0), i);
-                parts.push(v.first().map(|s| format_string_element(s, quote_strings)).unwrap_or_default());
-            }
-            format!("[{}]", parts.join(", "))
-        }
-        _ => {
-            let mut parts = Vec::new();
-            for i in 0..view.shape()[0] {
-                let v = view.index_axis(Axis(0), i);
-                parts.push(format_array_view_display(v.into_dyn(), quote_strings));
-            }
-            format_multiline_list(&parts)
-        }
-    }
-}
-
-fn format_string_element(value: &str, quote_strings: bool) -> String {
-    if quote_strings {
-        format!("{:?}", value)
-    } else {
-        value.to_string()
-    }
-}
-
-fn format_multiline_list(parts: &[String]) -> String {
-    if parts.is_empty() {
-        return "[]".to_string();
-    }
-    let indented: Vec<String> = parts.iter().map(|p| indent_lines(p, 2)).collect();
-    format!("[\n{}\n]", indented.join(",\n"))
-}
-
-
-
-fn indent_lines(value: &str, spaces: usize) -> String {
-    let prefix = " ".repeat(spaces);
-    value
-        .lines()
-        .map(|line| format!("{prefix}{line}"))
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 
