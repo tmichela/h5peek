@@ -23,24 +23,41 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
     let dtype = ds.dtype()?;
     let desc = dtype.to_descriptor().ok();
     let shape = ds.shape();
-    println!("      dtype: {}", utils::fmt_dtype(&dtype));
-    println!("      shape: {}", utils::fmt_shape(&shape));
+    let storage_bytes = ds.storage_size();
+    print_dataset_summary(&dtype, desc.as_ref(), &shape, storage_bytes, scalar_fmt);
+    print_dataset_maxshape(ds, &shape)?;
+    print_dataset_layout(ds)?;
+    print_dataset_preview(ds, slice_expr, array_fmt, scalar_fmt)?;
+    print_dataset_attrs(ds, scalar_fmt, truncate_attr_strings)?;
+    Ok(())
+}
 
-    let elem_count = if shape.is_empty() {
-        Some(1u64)
-    } else {
-        shape.iter().try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
-    };
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlotMode {
+    Selection,
+    Disabled,
+}
+
+fn print_dataset_summary(
+    dtype: &hdf5::Datatype,
+    desc: Option<&TypeDescriptor>,
+    shape: &[usize],
+    storage_bytes: u64,
+    scalar_fmt: &utils::NumFormat,
+) {
+    println!("      dtype: {}", utils::fmt_dtype(dtype));
+    println!("      shape: {}", utils::fmt_shape(shape));
+
+    let elem_count = elem_count_u64(shape);
     match elem_count {
         Some(count) => println!("   elements: {}", utils::fmt_u64(count, scalar_fmt)),
         None => println!("   elements: (too large)"),
     }
 
-    let storage_bytes = ds.storage_size();
     println!("    storage: {}", utils::fmt_bytes(storage_bytes));
 
     if let Some(desc) = desc {
-        if !descriptor_has_vlen(&desc) {
+        if !descriptor_has_vlen(desc) {
             match elem_count.and_then(|count| count.checked_mul(dtype.size() as u64)) {
                 Some(logical_bytes) => {
                     println!("logical size: {}", utils::fmt_bytes(logical_bytes));
@@ -55,34 +72,50 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
             println!("logical size: (variable-length)");
         }
     }
-    
+}
+
+fn print_dataset_maxshape(ds: &Dataset, shape: &[usize]) -> Result<()> {
     if let Ok(space) = ds.space() {
         let maxshape = space.maxdims();
-        let current_shape = &shape;
-        let different = maxshape.len() != current_shape.len() || 
-                        maxshape.iter().zip(current_shape.iter()).any(|(m, s)| m.is_none_or(|mv| mv != *s));
-        
+        let current_shape = shape;
+        let different = maxshape.len() != current_shape.len()
+            || maxshape
+                .iter()
+                .zip(current_shape.iter())
+                .any(|(m, s)| m.is_none_or(|mv| mv != *s));
+
         if different {
             println!("   maxshape: {}", utils::fmt_maxshape(&maxshape));
         }
     }
+    Ok(())
+}
 
+fn print_dataset_layout(ds: &Dataset) -> Result<()> {
     let create_plist = ds.create_plist()?;
     let layout = create_plist.layout();
     println!("     layout: {:?}", layout);
 
     if layout == Layout::Chunked {
         if let Some(chunks) = create_plist.chunk() {
-             println!("      chunk: {}", utils::fmt_shape(&chunks));
+            println!("      chunk: {}", utils::fmt_shape(&chunks));
         }
-        
+
         let filters = create_plist.filters();
         if !filters.is_empty() {
-             let filter_strs: Vec<String> = filters.iter().map(|f| format!("{:?}", f)).collect();
-             println!("compression: {}", filter_strs.join(", "));
+            let filter_strs: Vec<String> = filters.iter().map(|f| format!("{:?}", f)).collect();
+            println!("compression: {}", filter_strs.join(", "));
         }
     }
+    Ok(())
+}
 
+fn print_dataset_preview(
+    ds: &Dataset,
+    slice_expr: Option<&str>,
+    array_fmt: &utils::NumFormat,
+    scalar_fmt: &utils::NumFormat,
+) -> Result<()> {
     if let Some(expr) = slice_expr {
         println!("\nselected data [{}]:", expr);
         let selection = slicing::parse_slice(expr, &ds.shape())
@@ -97,20 +130,35 @@ pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &ut
             println!("(error reading sample data: {})", e);
         }
     }
+    Ok(())
+}
 
+fn print_dataset_attrs(
+    ds: &Dataset,
+    scalar_fmt: &utils::NumFormat,
+    truncate_attr_strings: bool,
+) -> Result<()> {
     let attr_names = ds.attr_names()?;
     println!("\n{} attributes:", attr_names.len());
     for name in attr_names {
         let attr = ds.attr(&name)?;
-        println!("* {}: {}", name, utils::format_attribute_value(&attr, scalar_fmt, truncate_attr_strings));
+        println!(
+            "* {}: {}",
+            name,
+            utils::format_attribute_value(&attr, scalar_fmt, truncate_attr_strings)
+        );
     }
     Ok(())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlotMode {
-    Selection,
-    Disabled,
+fn elem_count_u64(shape: &[usize]) -> Option<u64> {
+    if shape.is_empty() {
+        Some(1u64)
+    } else {
+        shape
+            .iter()
+            .try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
+    }
 }
 
 fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
