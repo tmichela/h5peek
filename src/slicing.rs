@@ -16,7 +16,7 @@ pub fn parse_slice(s: &str, shape: &[usize]) -> Result<Selection> {
     let mut ranges: Vec<SliceInfoElem> = Vec::with_capacity(shape.len());
     for (i, dim_len) in shape.iter().enumerate() {
         let range = match parts.get(i) {
-            Some(part) => parse_range(*part, *dim_len)?,
+            Some(part) => parse_range(part, *dim_len)?,
             None => SliceInfoElem::Slice {
                 start: 0,
                 end: Some(*dim_len as isize),
@@ -121,12 +121,10 @@ fn normalize_slice_part(s: &str) -> String {
         if c.is_whitespace() {
             continue;
         }
-        if c == '.' {
-            if chars.peek() == Some(&'.') {
-                chars.next();
-                out.push(':');
-                continue;
-            }
+        if c == '.' && chars.peek() == Some(&'.') {
+            chars.next();
+            out.push(':');
+            continue;
         }
         if c == ';' {
             out.push(':');

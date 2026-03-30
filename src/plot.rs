@@ -74,7 +74,7 @@ fn downsample_points(series: &[f64], max_points: usize) -> Option<Vec<(f32, f32)
                 .iter()
                 .map(|(idx, value)| (*idx as f64, *value))
                 .collect();
-            let ratio = (points_f64.len() + max_points - 1) / max_points;
+            let ratio = points_f64.len().div_ceil(max_points);
             fpcs(&points_f64, ratio.max(1))
         } else {
             samples
