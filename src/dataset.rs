@@ -1,6 +1,6 @@
 use hdf5::{Dataset, Dataspace, H5Type, Selection};
 use hdf5::plist::dataset_create::Layout;
-use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode, IntSize, FloatSize};
+use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode, VarLenAscii, IntSize, FloatSize};
 use hdf5::types::dyn_value::DynCompound;
 use crate::utils;
 use crate::slicing;
@@ -197,7 +197,8 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
             print_selection_numeric::<f64>(ds, selection, fmt, plot_mode)
         }
         TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
-        TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => print_selection_string(ds, selection),
+        TypeDescriptor::VarLenUnicode => print_selection_varlen_string::<VarLenUnicode>(ds, selection),
+        TypeDescriptor::VarLenAscii => print_selection_varlen_string::<VarLenAscii>(ds, selection),
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
             print_selection_fixed_string(ds, selection, *len)
         }
@@ -271,9 +272,12 @@ where
     Ok(())
 }
 
-fn print_selection_string(ds: &Dataset, selection: Selection) -> Result<()> {
-    let arr: ArrayD<VarLenUnicode> = ds.read_slice::<VarLenUnicode, _, IxDyn>(selection)?;
-    let s_arr = arr.map(|v: &VarLenUnicode| v.as_str().to_string());
+fn print_selection_varlen_string<T>(ds: &Dataset, selection: Selection) -> Result<()>
+where
+    T: H5Type + AsRef<str>,
+{
+    let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
+    let s_arr = arr.map(|v: &T| v.as_ref().to_string());
     println!("{}", format_array_with_ellipsis_display(&s_arr, true));
     Ok(())
 }
@@ -392,11 +396,11 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
                  Err(e) => println!("(failed to read scalar value: {e})"),
              }
         },
-        TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenAscii => {
-             match ds.read_scalar::<VarLenUnicode>() {
-                 Ok(v) => println!("{}", v.as_str()),
-                 Err(e) => println!("(failed to read scalar value: {e})"),
-             }
+        TypeDescriptor::VarLenUnicode => {
+             print_scalar_varlen_string::<VarLenUnicode>(ds);
+        },
+        TypeDescriptor::VarLenAscii => {
+             print_scalar_varlen_string::<VarLenAscii>(ds);
         },
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
             match read_fixed_string_scalar(ds, len) {
@@ -415,6 +419,16 @@ where
 {
     match ds.read_scalar::<T>() {
         Ok(v) => println!("{}", v.format_value(fmt)),
+        Err(e) => println!("(failed to read scalar value: {e})"),
+    }
+}
+
+fn print_scalar_varlen_string<T>(ds: &Dataset)
+where
+    T: H5Type + AsRef<str>,
+{
+    match ds.read_scalar::<T>() {
+        Ok(v) => println!("{}", v.as_ref()),
         Err(e) => println!("(failed to read scalar value: {e})"),
     }
 }

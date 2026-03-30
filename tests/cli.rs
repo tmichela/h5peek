@@ -4,7 +4,7 @@ use predicates::prelude::*;
 use predicates::str::{contains, is_match};
 
 mod common;
-use common::{create_external_link_fixture, create_fixed_ascii_array, sample_file_path, temp_h5_path};
+use common::{create_external_link_fixture, create_fixed_ascii_array, create_varlen_ascii_array, create_varlen_ascii_scalar, sample_file_path, temp_h5_path};
 
 fn base_cmd() -> Command {
     let mut cmd = cargo_bin_cmd!("h5peek");
@@ -157,6 +157,43 @@ fn fixed_length_string_array_is_displayed() {
             .stdout(contains("sample data:"))
             .stdout(contains("alpha"))
             .stdout(contains("beta"));
+
+        let _ = std::fs::remove_file(path);
+    });
+}
+
+#[test]
+fn varlen_ascii_string_array_is_displayed() {
+    with_hdf5_lock(|| {
+        let path = temp_h5_path("varlen_ascii_array");
+        create_varlen_ascii_array(&path);
+
+        base_cmd()
+            .arg(&path)
+            .arg("/strings")
+            .assert()
+            .success()
+            .stdout(contains("sample data:"))
+            .stdout(contains("alpha"))
+            .stdout(contains("beta"));
+
+        let _ = std::fs::remove_file(path);
+    });
+}
+
+#[test]
+fn varlen_ascii_string_scalar_is_displayed() {
+    with_hdf5_lock(|| {
+        let path = temp_h5_path("varlen_ascii_scalar");
+        create_varlen_ascii_scalar(&path);
+
+        base_cmd()
+            .arg(&path)
+            .arg("/string_scalar")
+            .assert()
+            .success()
+            .stdout(contains("data:"))
+            .stdout(contains("alpha"));
 
         let _ = std::fs::remove_file(path);
     });
