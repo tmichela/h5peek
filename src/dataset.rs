@@ -204,14 +204,14 @@ fn print_selection_data(
         }
     };
 
-    match &desc {
+    let plot_values = match &desc {
         TypeDescriptor::Integer(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_numeric::<i64>(ds, selection, fmt, plot_mode, display_mode)
+            print_selection_numeric::<i64>(ds, selection, fmt, plot_mode, display_mode)?
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -219,27 +219,43 @@ fn print_selection_data(
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_numeric::<u64>(ds, selection, fmt, plot_mode, display_mode)
+            print_selection_numeric::<u64>(ds, selection, fmt, plot_mode, display_mode)?
         }
         TypeDescriptor::Float(_) => {
-            print_selection_numeric::<f64>(ds, selection, fmt, plot_mode, display_mode)
+            print_selection_numeric::<f64>(ds, selection, fmt, plot_mode, display_mode)?
         }
-        TypeDescriptor::Boolean => print_selection::<bool>(ds, selection, display_mode),
+        TypeDescriptor::Boolean => {
+            print_selection::<bool>(ds, selection, display_mode)?;
+            None
+        }
         TypeDescriptor::VarLenUnicode => {
-            print_selection_varlen_string::<VarLenUnicode>(ds, selection, display_mode)
+            print_selection_varlen_string::<VarLenUnicode>(ds, selection, display_mode)?;
+            None
         }
         TypeDescriptor::VarLenAscii => {
-            print_selection_varlen_string::<VarLenAscii>(ds, selection, display_mode)
+            print_selection_varlen_string::<VarLenAscii>(ds, selection, display_mode)?;
+            None
         }
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
-            print_selection_fixed_string(ds, selection, *len, display_mode)
+            print_selection_fixed_string(ds, selection, *len, display_mode)?;
+            None
         }
-        TypeDescriptor::Compound(compound) => print_selection_compound(ds, selection, compound),
+        TypeDescriptor::Compound(compound) => {
+            print_selection_compound(ds, selection, compound)?;
+            None
+        }
         _ => {
             println!("(data type not supported for display)");
-            Ok(())
+            None
+        }
+    };
+
+    if plot_mode == PlotMode::Selection {
+        if let Some(values) = plot_values {
+            maybe_print_plot(&values);
         }
     }
+    Ok(())
 }
 
 fn print_selection<T>(ds: &Dataset, selection: Selection, display_mode: DisplayMode) -> Result<()>
@@ -293,7 +309,7 @@ fn print_selection_numeric<T>(
     fmt: &utils::NumFormat,
     plot_mode: PlotMode,
     display_mode: DisplayMode,
-) -> Result<()>
+) -> Result<Option<Vec<f64>>>
 where
     T: NumericFormat,
 {
@@ -301,9 +317,10 @@ where
     let s_arr = arr.map(|v| v.format_value(fmt));
     println!("{}", display_mode.format_strings(&s_arr, false));
     if plot_mode == PlotMode::Selection {
-        maybe_print_plot_from_array(&arr);
+        Ok(plot_values_from_array(&arr))
+    } else {
+        Ok(None)
     }
-    Ok(())
 }
 
 fn print_selection_varlen_string<T>(
@@ -412,7 +429,7 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
             return Ok(());
         }
     };
-    
+
     match desc {
         TypeDescriptor::Integer(_) => {
             let size = dtype.size();
@@ -491,13 +508,17 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         let sample_expr = sample_parts.join(",");
         if let Ok(selection) = slicing::parse_slice(&sample_expr, &shape) {
             print_selection_data(ds, selection, fmt, PlotMode::Disabled, DisplayMode::Preview)?;
-            plot_full_dataset_1d(ds)?;
+            if let Some(values) = plot_full_dataset_1d(ds)? {
+                maybe_print_plot(&values);
+            }
             return Ok(());
         }
     }
 
     print_selection_data(ds, Selection::new(..), fmt, PlotMode::Disabled, DisplayMode::Preview)?;
-    plot_full_dataset_1d(ds)?;
+    if let Some(values) = plot_full_dataset_1d(ds)? {
+        maybe_print_plot(&values);
+    }
     Ok(())
 }
 
@@ -606,21 +627,21 @@ fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize) -
     ArrayD::from_shape_vec(IxDyn(&out_shape), out).map_err(|e| anyhow!(e))
 }
 
-fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
+fn plot_full_dataset_1d(ds: &Dataset) -> Result<Option<Vec<f64>>> {
     let shape = ds.shape();
     if shape.len() != 1 {
-        return Ok(());
+        return Ok(None);
     }
     let len = shape[0];
     if len < 2 {
-        return Ok(());
+        return Ok(None);
     }
 
     let dtype = ds.dtype()?;
     let desc = match dtype.to_descriptor() {
         Ok(d) => d,
         Err(_) => {
-            return Ok(());
+            return Ok(None);
         }
     };
 
@@ -628,37 +649,35 @@ fn plot_full_dataset_1d(ds: &Dataset) -> Result<()> {
         TypeDescriptor::Integer(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
-                return Ok(());
+                return Ok(None);
             }
             let arr: ArrayD<i64> = ds.read_slice::<i64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_array(&arr);
+            Ok(plot_values_from_array(&arr))
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
-                return Ok(());
+                return Ok(None);
             }
             let arr: ArrayD<u64> = ds.read_slice::<u64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_array(&arr);
+            Ok(plot_values_from_array(&arr))
         }
         TypeDescriptor::Float(_) => {
             let arr: ArrayD<f64> = ds.read_slice::<f64, _, IxDyn>(Selection::new(..))?;
-            maybe_print_plot_from_array(&arr);
+            Ok(plot_values_from_array(&arr))
         }
-        _ => {}
+        _ => Ok(None),
     }
-    Ok(())
 }
 
-fn maybe_print_plot_from_array<T>(arr: &ArrayD<T>)
+fn plot_values_from_array<T>(arr: &ArrayD<T>) -> Option<Vec<f64>>
 where
     T: NumericFormat,
 {
     if arr.ndim() != 1 || arr.len() < 2 {
-        return;
+        return None;
     }
-    let values: Vec<f64> = arr.iter().map(|v| v.to_f64()).collect();
-    maybe_print_plot(&values);
+    Some(arr.iter().map(|v| v.to_f64()).collect())
 }
 
 fn maybe_print_plot(values: &[f64]) {
