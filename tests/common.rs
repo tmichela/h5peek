@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use hdf5::types::FixedAscii;
+use hdf5::types::{FixedAscii, VarLenAscii};
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static HDF5_LOCK: Mutex<()> = Mutex::new(());
@@ -42,6 +42,34 @@ pub fn create_fixed_ascii_array(path: &Path) {
         .with_data(&data)
         .create("strings")
         .unwrap();
+    file.flush().unwrap();
+    drop(file);
+}
+
+pub fn create_varlen_ascii_array(path: &Path) {
+    let file = hdf5::File::create(path).unwrap();
+    let data = vec![
+        VarLenAscii::from_ascii(b"alpha").unwrap(),
+        VarLenAscii::from_ascii(b"beta").unwrap(),
+        VarLenAscii::from_ascii(b"gamma").unwrap(),
+    ];
+    file.new_dataset_builder()
+        .with_data(&data)
+        .create("strings")
+        .unwrap();
+    file.flush().unwrap();
+    drop(file);
+}
+
+pub fn create_varlen_ascii_scalar(path: &Path) {
+    let file = hdf5::File::create(path).unwrap();
+    let value = VarLenAscii::from_ascii(b"alpha").unwrap();
+    let ds = file
+        .new_dataset::<VarLenAscii>()
+        .shape(())
+        .create("string_scalar")
+        .unwrap();
+    ds.write_scalar(&value).unwrap();
     file.flush().unwrap();
     drop(file);
 }
