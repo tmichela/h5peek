@@ -39,6 +39,13 @@ pub fn format_string_array_with_ellipsis(
     format_array_view_with_ellipsis_display(arr.view(), cfg.edge, quote_strings)
 }
 
+pub fn format_string_array_full(arr: &ArrayD<String>, quote_strings: bool) -> String {
+    if arr.is_empty() {
+        return "[]".to_string();
+    }
+    format_array_view_display(arr.view(), quote_strings)
+}
+
 fn needs_ellipsis(len: usize, shape: &[usize], cfg: EllipsisConfig) -> bool {
     len > cfg.max_elems || shape.iter().any(|&d| d > cfg.edge * 2)
 }

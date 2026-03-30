@@ -57,6 +57,23 @@ fn dataset_info_includes_dtype_shape_and_sample() {
 }
 
 #[test]
+fn slice_full_array_shows_all_elements_when_small() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        base_cmd()
+            .arg(&path)
+            .arg("/arrays_1d/int32")
+            .arg("--slice")
+            .arg(":")
+            .assert()
+            .success()
+            .stdout(contains("selected data [:]:"))
+            .stdout(contains("[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]"));
+    });
+}
+
+#[test]
 fn slice_on_group_errors() {
     with_hdf5_lock(|| {
         let path = sample_file_path();
