@@ -65,23 +65,40 @@ fn has_glob_meta(pattern: &str) -> bool {
     false
 }
 
+pub struct TreePrintOptions<'a> {
+    pub expand_attrs: bool,
+    pub max_depth: Option<usize>,
+    pub sort_members: bool,
+    pub filter: Option<&'a PathFilter>,
+    pub fmt: utils::NumFormat,
+    pub truncate_attr_strings: bool,
+}
+
+impl<'a> TreePrintOptions<'a> {
+    pub fn new(fmt: utils::NumFormat) -> Self {
+        Self {
+            expand_attrs: false,
+            max_depth: None,
+            sort_members: true,
+            filter: None,
+            fmt,
+            truncate_attr_strings: false,
+        }
+    }
+}
+
 pub fn print_group_tree(
     group: &Group,
     name: &str,
-    expand_attrs: bool,
-    max_depth: Option<usize>,
-    sort_members: bool,
-    filter: Option<&PathFilter>,
-    fmt: &utils::NumFormat,
-    truncate_attr_strings: bool,
+    opts: &TreePrintOptions<'_>,
 ) -> Result<bool> {
     let mut printer = TreePrinter::new(
-        expand_attrs,
-        max_depth,
-        sort_members,
-        filter,
-        fmt,
-        truncate_attr_strings,
+        opts.expand_attrs,
+        opts.max_depth,
+        opts.sort_members,
+        opts.filter,
+        &opts.fmt,
+        opts.truncate_attr_strings,
     );
     printer.print_node(Node::Group(group.clone()), name, "", true, 0, false)
 }
