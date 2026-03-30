@@ -27,7 +27,12 @@ pub fn sample_file_path() -> PathBuf {
 pub fn temp_h5_path(name: &str) -> PathBuf {
     let mut path = std::env::temp_dir();
     let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
-    path.push(format!("h5peek_{}_{}_{}.h5", name, std::process::id(), counter));
+    path.push(format!(
+        "h5peek_{}_{}_{}.h5",
+        name,
+        std::process::id(),
+        counter
+    ));
     path
 }
 
@@ -104,10 +109,12 @@ pub fn create_external_link_fixture() -> (PathBuf, PathBuf, String) {
 
 #[allow(dead_code)]
 pub fn create_packed_compound_fixture(path: &Path) {
-    use hdf5_sys::h5d::{H5Dcreate2, H5Dclose, H5Dwrite};
+    use hdf5_sys::h5d::{H5Dclose, H5Dcreate2, H5Dwrite};
     use hdf5_sys::h5p::H5P_DEFAULT;
-    use hdf5_sys::h5s::{H5Screate_simple, H5Sclose};
-    use hdf5_sys::h5t::{H5Tclose, H5Tcreate, H5Tinsert, H5T_COMPOUND, H5T_NATIVE_DOUBLE, H5T_NATIVE_INT};
+    use hdf5_sys::h5s::{H5Sclose, H5Screate_simple};
+    use hdf5_sys::h5t::{
+        H5Tclose, H5Tcreate, H5Tinsert, H5T_COMPOUND, H5T_NATIVE_DOUBLE, H5T_NATIVE_INT,
+    };
     use std::ffi::{c_void, CString};
 
     let file = hdf5::File::create(path).unwrap();

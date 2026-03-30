@@ -1,25 +1,34 @@
-use hdf5::{Dataset, Dataspace, H5Type, Selection};
-use hdf5::plist::dataset_create::Layout;
-use hdf5::types::{CompoundType, TypeDescriptor, VarLenUnicode, VarLenAscii, IntSize, FloatSize};
-use hdf5::types::dyn_value::DynCompound;
-use crate::utils;
-use crate::slicing;
+use crate::array_format::{self, EllipsisConfig};
 use crate::plot;
 use crate::plot::PlotBackend;
-use crate::array_format::{self, EllipsisConfig};
+use crate::slicing;
+use crate::utils;
 use anyhow::{anyhow, Result};
-use ndarray::{ArrayD, IxDyn};
+use hdf5::plist::dataset_create::Layout;
+use hdf5::types::dyn_value::DynCompound;
+use hdf5::types::{CompoundType, FloatSize, IntSize, TypeDescriptor, VarLenAscii, VarLenUnicode};
+use hdf5::{Dataset, Dataspace, H5Type, Selection};
 use hdf5_sys::h5d::H5Dread;
 use hdf5_sys::h5p::H5P_DEFAULT;
 use hdf5_sys::h5t::{H5Tget_class, H5T_INTEGER};
+use ndarray::{ArrayD, IxDyn};
 
 const MAX_ARRAY_ELEMS: usize = 200;
 const ARRAY_EDGE: usize = 3;
 const MAX_COMPOUND_ROWS: usize = 20;
 const COMPOUND_EDGE: usize = 5;
-const ARRAY_FORMAT: EllipsisConfig = EllipsisConfig { max_elems: MAX_ARRAY_ELEMS, edge: ARRAY_EDGE };
+const ARRAY_FORMAT: EllipsisConfig = EllipsisConfig {
+    max_elems: MAX_ARRAY_ELEMS,
+    edge: ARRAY_EDGE,
+};
 
-pub fn print_dataset_info(ds: &Dataset, slice_expr: Option<&str>, array_fmt: &utils::NumFormat, scalar_fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<()> {
+pub fn print_dataset_info(
+    ds: &Dataset,
+    slice_expr: Option<&str>,
+    array_fmt: &utils::NumFormat,
+    scalar_fmt: &utils::NumFormat,
+    truncate_attr_strings: bool,
+) -> Result<()> {
     let dtype = ds.dtype()?;
     let desc = dtype.to_descriptor().ok();
     let shape = ds.shape();
@@ -142,8 +151,14 @@ fn print_dataset_preview(
         println!("\nselected data [{}]:", expr);
         let selection = slicing::parse_slice(expr, &ds.shape())
             .map_err(|e| anyhow!("Error parsing slice: {}", e))?;
-        print_selection_data(ds, selection, array_fmt, PlotMode::Selection, DisplayMode::Full)
-            .map_err(|e| anyhow!("Error reading sliced data: {}", e))?;
+        print_selection_data(
+            ds,
+            selection,
+            array_fmt,
+            PlotMode::Selection,
+            DisplayMode::Full,
+        )
+        .map_err(|e| anyhow!("Error reading sliced data: {}", e))?;
     } else if ds.ndim() == 0 {
         print_scalar(ds, scalar_fmt)?;
     } else {
@@ -196,7 +211,10 @@ fn print_selection_data(
         Err(_) => {
             if dtype_is_integer(&dtype) {
                 let size = dtype.size();
-                println!("(data display not supported for integer size {} bytes)", size);
+                println!(
+                    "(data display not supported for integer size {} bytes)",
+                    size
+                );
                 return Ok(());
             }
             println!("(data type not supported for display)");
@@ -208,7 +226,10 @@ fn print_selection_data(
         TypeDescriptor::Integer(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
-                println!("(data display not supported for integer size {} bytes)", size);
+                println!(
+                    "(data display not supported for integer size {} bytes)",
+                    size
+                );
                 return Ok(());
             }
             print_selection_numeric::<i64>(ds, selection, fmt, plot_mode, display_mode)?
@@ -216,7 +237,10 @@ fn print_selection_data(
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
-                println!("(data display not supported for integer size {} bytes)", size);
+                println!(
+                    "(data display not supported for integer size {} bytes)",
+                    size
+                );
                 return Ok(());
             }
             print_selection_numeric::<u64>(ds, selection, fmt, plot_mode, display_mode)?
@@ -348,7 +372,11 @@ fn print_selection_fixed_string(
     Ok(())
 }
 
-fn print_selection_compound(ds: &Dataset, selection: Selection, compound: &CompoundType) -> Result<()> {
+fn print_selection_compound(
+    ds: &Dataset,
+    selection: Selection,
+    compound: &CompoundType,
+) -> Result<()> {
     if compound_has_vlen(compound) {
         println!("(compound data with variable-length fields is not supported for display)");
         return Ok(());
@@ -422,7 +450,10 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         Err(_) => {
             if dtype_is_integer(&dtype) {
                 let size = dtype.size();
-                println!("(data display not supported for integer size {} bytes)", size);
+                println!(
+                    "(data display not supported for integer size {} bytes)",
+                    size
+                );
                 return Ok(());
             }
             println!("(data type not supported for display)");
@@ -434,34 +465,38 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         TypeDescriptor::Integer(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
-                println!("(data display not supported for integer size {} bytes)", size);
+                println!(
+                    "(data display not supported for integer size {} bytes)",
+                    size
+                );
                 return Ok(());
             }
             print_scalar_numeric::<i64>(ds, fmt);
-        },
+        }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
             if !is_standard_int_size(size) {
-                println!("(data display not supported for integer size {} bytes)", size);
+                println!(
+                    "(data display not supported for integer size {} bytes)",
+                    size
+                );
                 return Ok(());
             }
             print_scalar_numeric::<u64>(ds, fmt);
-        },
+        }
         TypeDescriptor::Float(_) => {
-             print_scalar_numeric::<f64>(ds, fmt);
-        },
-        TypeDescriptor::Boolean => {
-             match ds.read_scalar::<bool>() {
-                 Ok(v) => println!("{}", v),
-                 Err(e) => println!("(failed to read scalar value: {e})"),
-             }
+            print_scalar_numeric::<f64>(ds, fmt);
+        }
+        TypeDescriptor::Boolean => match ds.read_scalar::<bool>() {
+            Ok(v) => println!("{}", v),
+            Err(e) => println!("(failed to read scalar value: {e})"),
         },
         TypeDescriptor::VarLenUnicode => {
-             print_scalar_varlen_string::<VarLenUnicode>(ds);
-        },
+            print_scalar_varlen_string::<VarLenUnicode>(ds);
+        }
         TypeDescriptor::VarLenAscii => {
-             print_scalar_varlen_string::<VarLenAscii>(ds);
-        },
+            print_scalar_varlen_string::<VarLenAscii>(ds);
+        }
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
             match read_fixed_string_scalar(ds, len) {
                 Ok(value) => println!("{}", value),
@@ -495,7 +530,9 @@ where
 
 fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
     let shape = ds.shape();
-    if shape.is_empty() { return Ok(()); }
+    if shape.is_empty() {
+        return Ok(());
+    }
 
     // If dataset is very large, take a slice
     let total_size = total_size_checked(&shape);
@@ -515,7 +552,13 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         }
     }
 
-    print_selection_data(ds, Selection::new(..), fmt, PlotMode::Disabled, DisplayMode::Preview)?;
+    print_selection_data(
+        ds,
+        Selection::new(..),
+        fmt,
+        PlotMode::Disabled,
+        DisplayMode::Preview,
+    )?;
     if let Some(values) = plot_full_dataset_1d(ds)? {
         maybe_print_plot(&values);
     }
@@ -542,7 +585,9 @@ fn alignment_for_descriptor(desc: &TypeDescriptor) -> Option<usize> {
         TypeDescriptor::Boolean => Some(1),
         TypeDescriptor::Enum(e) => int_size_to_bytes(e.size),
         TypeDescriptor::FixedAscii(_) | TypeDescriptor::FixedUnicode(_) => Some(1),
-        TypeDescriptor::VarLenAscii | TypeDescriptor::VarLenUnicode | TypeDescriptor::VarLenArray(_) => None,
+        TypeDescriptor::VarLenAscii
+        | TypeDescriptor::VarLenUnicode
+        | TypeDescriptor::VarLenArray(_) => None,
         TypeDescriptor::FixedArray(_, _) => None,
         TypeDescriptor::Compound(_) => None,
         TypeDescriptor::Reference(_) => None,
@@ -589,11 +634,19 @@ fn read_fixed_string_scalar(ds: &Dataset, len: usize) -> Result<String> {
     Ok(arr.first().cloned().unwrap_or_default())
 }
 
-fn read_fixed_string_selection(ds: &Dataset, selection: Selection, len: usize) -> Result<ArrayD<String>> {
+fn read_fixed_string_selection(
+    ds: &Dataset,
+    selection: Selection,
+    len: usize,
+) -> Result<ArrayD<String>> {
     let dtype = ds.dtype()?;
     let obj_space = ds.space()?;
     let out_shape = selection.out_shape(obj_space.shape())?;
-    let out_size: usize = if out_shape.is_empty() { 1 } else { out_shape.iter().product() };
+    let out_size: usize = if out_shape.is_empty() {
+        1
+    } else {
+        out_shape.iter().product()
+    };
     if out_size == 0 {
         return ArrayD::from_shape_vec(IxDyn(&out_shape), Vec::new()).map_err(|e| anyhow!(e));
     }
@@ -704,14 +757,22 @@ fn format_array_full_display(arr: &ArrayD<String>, quote_strings: bool) -> Strin
 }
 
 fn compound_has_vlen(compound: &CompoundType) -> bool {
-    compound.fields.iter().any(|field| descriptor_has_vlen(&field.ty))
+    compound
+        .fields
+        .iter()
+        .any(|field| descriptor_has_vlen(&field.ty))
 }
 
 fn descriptor_has_vlen(desc: &TypeDescriptor) -> bool {
     match desc {
-        TypeDescriptor::VarLenArray(_) | TypeDescriptor::VarLenAscii | TypeDescriptor::VarLenUnicode => true,
+        TypeDescriptor::VarLenArray(_)
+        | TypeDescriptor::VarLenAscii
+        | TypeDescriptor::VarLenUnicode => true,
         TypeDescriptor::FixedArray(inner, _) => descriptor_has_vlen(inner),
-        TypeDescriptor::Compound(compound) => compound.fields.iter().any(|field| descriptor_has_vlen(&field.ty)),
+        TypeDescriptor::Compound(compound) => compound
+            .fields
+            .iter()
+            .any(|field| descriptor_has_vlen(&field.ty)),
         _ => false,
     }
 }
@@ -732,7 +793,13 @@ fn format_index(flat: usize, shape: &[usize]) -> String {
             rem /= d;
         }
     }
-    format!("({})", idx.iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", "))
+    format!(
+        "({})",
+        idx.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 fn truncate_rows(rows: &[Vec<String>], edge: usize, max_rows: usize) -> Vec<Vec<String>> {

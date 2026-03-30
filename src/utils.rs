@@ -1,12 +1,16 @@
+use crate::array_format::{self, EllipsisConfig};
+use hdf5::types::{FloatSize, IntSize, TypeDescriptor, VarLenAscii, VarLenUnicode};
 use hdf5::Datatype;
 use hdf5::H5Type;
-use hdf5::types::{TypeDescriptor, IntSize, FloatSize, VarLenUnicode, VarLenAscii};
 use hdf5_sys::h5a::H5Aread;
-use hdf5_sys::h5t::{H5Tget_order, H5Tget_size, H5Tget_class, H5Tget_sign, H5T_ORDER_BE, H5T_INTEGER, H5T_FLOAT, H5T_SGN_NONE, H5Tcopy, H5Tset_size, H5Tset_cset, H5Tset_strpad, H5Tclose, H5T_C_S1, H5T_cset_t, H5T_str_t};
 use hdf5_sys::h5p::H5P_DEFAULT;
+use hdf5_sys::h5t::{
+    H5T_cset_t, H5T_str_t, H5Tclose, H5Tcopy, H5Tget_class, H5Tget_order, H5Tget_sign, H5Tget_size,
+    H5Tset_cset, H5Tset_size, H5Tset_strpad, H5T_C_S1, H5T_FLOAT, H5T_INTEGER, H5T_ORDER_BE,
+    H5T_SGN_NONE,
+};
 use ndarray::{ArrayD, IxDyn};
 use std::ffi::CString;
-use crate::array_format::{self, EllipsisConfig};
 
 #[derive(Clone, Copy, Debug)]
 pub struct NumFormat {
@@ -33,7 +37,7 @@ impl NumFormat {
 }
 #[allow(deprecated)]
 pub fn get_object_addr(loc_id: i64) -> Option<u64> {
-    use hdf5_sys::h5o::{H5Oget_info1, H5O_info1_t};
+    use hdf5_sys::h5o::{H5O_info1_t, H5Oget_info1};
     unsafe {
         let mut info: H5O_info1_t = std::mem::zeroed();
         if H5Oget_info1(loc_id, &mut info) >= 0 {
@@ -53,7 +57,9 @@ pub enum LinkInfo {
 
 #[allow(deprecated)]
 pub fn get_link_info(loc_id: i64, name: &str) -> LinkInfo {
-    use hdf5_sys::h5l::{H5Lget_info1, H5Lget_val, H5L_info1_t, H5L_TYPE_SOFT, H5L_TYPE_EXTERNAL, H5L_TYPE_HARD};
+    use hdf5_sys::h5l::{
+        H5L_info1_t, H5Lget_info1, H5Lget_val, H5L_TYPE_EXTERNAL, H5L_TYPE_HARD, H5L_TYPE_SOFT,
+    };
 
     let c_name = match CString::new(name) {
         Ok(c) => c,
@@ -72,25 +78,43 @@ pub fn get_link_info(loc_id: i64, name: &str) -> LinkInfo {
             H5L_TYPE_SOFT => {
                 let size = *info.u.val_size();
                 let mut buf: Vec<u8> = vec![0; size + 1];
-                H5Lget_val(loc_id, c_name.as_ptr(), buf.as_mut_ptr() as *mut _, size, H5P_DEFAULT);
+                H5Lget_val(
+                    loc_id,
+                    c_name.as_ptr(),
+                    buf.as_mut_ptr() as *mut _,
+                    size,
+                    H5P_DEFAULT,
+                );
                 // Remove trailing nulls/garbage if any, CString::from_vec_with_nul handles one null.
                 // The buf size from val_size usually includes null terminator for soft links?
                 // Or we can just parse up to first null.
                 let s = parse_null_terminated(&buf);
                 LinkInfo::Soft(s)
-            },
+            }
             H5L_TYPE_EXTERNAL => {
                 let size = *info.u.val_size();
                 let mut buf: Vec<u8> = vec![0; size + 1];
-                H5Lget_val(loc_id, c_name.as_ptr(), buf.as_mut_ptr() as *mut _, size, H5P_DEFAULT);
+                H5Lget_val(
+                    loc_id,
+                    c_name.as_ptr(),
+                    buf.as_mut_ptr() as *mut _,
+                    size,
+                    H5P_DEFAULT,
+                );
 
                 // External link value: filename \0 path \0
                 let full = buf;
                 let mut parts = full.split(|&b| b == 0).filter(|p| !p.is_empty());
-                let file = parts.next().map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
-                let path = parts.next().map(|p| String::from_utf8_lossy(p).into_owned()).unwrap_or_default();
+                let file = parts
+                    .next()
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .unwrap_or_default();
+                let path = parts
+                    .next()
+                    .map(|p| String::from_utf8_lossy(p).into_owned())
+                    .unwrap_or_default();
                 LinkInfo::External { file, path }
-            },
+            }
             _ => LinkInfo::Other,
         }
     }
@@ -107,7 +131,11 @@ pub fn fmt_shape(shape: &[usize]) -> String {
     if shape.is_empty() {
         return "scalar".to_string();
     }
-    shape.iter().map(|s| s.to_string()).collect::<Vec<_>>().join(" × ")
+    shape
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>()
+        .join(" × ")
 }
 
 pub fn fmt_bytes(bytes: u64) -> String {
@@ -153,10 +181,14 @@ pub fn fmt_maxshape(shape: &[Option<usize>]) -> String {
     if shape.is_empty() {
         return "scalar".to_string();
     }
-    shape.iter().map(|s| match s {
-        Some(v) => v.to_string(),
-        None => "unlimited".to_string(),
-    }).collect::<Vec<_>>().join(" × ")
+    shape
+        .iter()
+        .map(|s| match s {
+            Some(v) => v.to_string(),
+            None => "unlimited".to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(" × ")
 }
 
 pub fn fmt_dtype(dtype: &Datatype) -> String {
@@ -175,7 +207,11 @@ fn fmt_dtype_fallback(dtype: &Datatype) -> String {
 
         if class == H5T_INTEGER {
             let sign = H5Tget_sign(id);
-            let sign_str = if sign == H5T_SGN_NONE { "unsigned" } else { "signed" };
+            let sign_str = if sign == H5T_SGN_NONE {
+                "unsigned"
+            } else {
+                "signed"
+            };
             format!("{}-byte {} integer{}", size, sign_str, suffix)
         } else if class == H5T_FLOAT {
             format!("custom {}-byte float{}", size, suffix)
@@ -219,35 +255,47 @@ fn get_real_size(dtype: &Datatype) -> usize {
 fn dtype_description_from_desc(desc: &TypeDescriptor, dtype: &Datatype) -> Option<String> {
     match desc {
         TypeDescriptor::Integer(size) => {
-             let bits = int_size_to_bits(*size);
-             let std_bytes = (bits / 8) as usize;
-             let suffix = get_endian_suffix(dtype);
-             if is_custom_size(dtype, std_bytes) {
-                 Some(format!("custom {}-byte signed integer{}", get_real_size(dtype), suffix))
-             } else {
-                 Some(format!("{}-bit signed integer{}", bits, suffix))
-             }
-        },
+            let bits = int_size_to_bits(*size);
+            let std_bytes = (bits / 8) as usize;
+            let suffix = get_endian_suffix(dtype);
+            if is_custom_size(dtype, std_bytes) {
+                Some(format!(
+                    "custom {}-byte signed integer{}",
+                    get_real_size(dtype),
+                    suffix
+                ))
+            } else {
+                Some(format!("{}-bit signed integer{}", bits, suffix))
+            }
+        }
         TypeDescriptor::Unsigned(size) => {
-             let bits = int_size_to_bits(*size);
-             let std_bytes = (bits / 8) as usize;
-             let suffix = get_endian_suffix(dtype);
-             if is_custom_size(dtype, std_bytes) {
-                 Some(format!("custom {}-byte unsigned integer{}", get_real_size(dtype), suffix))
-             } else {
-                 Some(format!("{}-bit unsigned integer{}", bits, suffix))
-             }
-        },
+            let bits = int_size_to_bits(*size);
+            let std_bytes = (bits / 8) as usize;
+            let suffix = get_endian_suffix(dtype);
+            if is_custom_size(dtype, std_bytes) {
+                Some(format!(
+                    "custom {}-byte unsigned integer{}",
+                    get_real_size(dtype),
+                    suffix
+                ))
+            } else {
+                Some(format!("{}-bit unsigned integer{}", bits, suffix))
+            }
+        }
         TypeDescriptor::Float(size) => {
-             let bits = float_size_to_bits(*size);
-             let std_bytes = (bits / 8) as usize;
-             let suffix = get_endian_suffix(dtype);
-             if is_custom_size(dtype, std_bytes) {
-                 Some(format!("custom {}-byte floating point{}", get_real_size(dtype), suffix))
-             } else {
-                 Some(format!("{}-bit floating point{}", bits, suffix))
-             }
-        },
+            let bits = float_size_to_bits(*size);
+            let std_bytes = (bits / 8) as usize;
+            let suffix = get_endian_suffix(dtype);
+            if is_custom_size(dtype, std_bytes) {
+                Some(format!(
+                    "custom {}-byte floating point{}",
+                    get_real_size(dtype),
+                    suffix
+                ))
+            } else {
+                Some(format!("{}-bit floating point{}", bits, suffix))
+            }
+        }
         TypeDescriptor::Reference(r) => Some(match r {
             hdf5::types::Reference::Object => "object reference".to_string(),
             hdf5::types::Reference::Region => "region reference".to_string(),
@@ -260,72 +308,86 @@ fn dtype_description_from_desc(desc: &TypeDescriptor, dtype: &Datatype) -> Optio
 fn fmt_descriptor_short(desc: &TypeDescriptor, dtype: &Datatype) -> String {
     match desc {
         TypeDescriptor::Integer(size) => {
-             let bits = int_size_to_bits(*size);
-             let std_bytes = (bits / 8) as usize;
-             let suffix = get_endian_suffix(dtype);
-             if is_custom_size(dtype, std_bytes) {
-                 format!("{}-byte signed integer{}", get_real_size(dtype), suffix)
-             } else {
-                 format!("int{}{}", bits, suffix)
-             }
-        },
+            let bits = int_size_to_bits(*size);
+            let std_bytes = (bits / 8) as usize;
+            let suffix = get_endian_suffix(dtype);
+            if is_custom_size(dtype, std_bytes) {
+                format!("{}-byte signed integer{}", get_real_size(dtype), suffix)
+            } else {
+                format!("int{}{}", bits, suffix)
+            }
+        }
         TypeDescriptor::Unsigned(size) => {
-             let bits = int_size_to_bits(*size);
-             let std_bytes = (bits / 8) as usize;
-             let suffix = get_endian_suffix(dtype);
-             if is_custom_size(dtype, std_bytes) {
-                 format!("{}-byte unsigned integer{}", get_real_size(dtype), suffix)
-             } else {
-                 format!("uint{}{}", bits, suffix)
-             }
-        },
+            let bits = int_size_to_bits(*size);
+            let std_bytes = (bits / 8) as usize;
+            let suffix = get_endian_suffix(dtype);
+            if is_custom_size(dtype, std_bytes) {
+                format!("{}-byte unsigned integer{}", get_real_size(dtype), suffix)
+            } else {
+                format!("uint{}{}", bits, suffix)
+            }
+        }
         TypeDescriptor::Float(size) => {
-             let bits = float_size_to_bits(*size);
-             let std_bytes = (bits / 8) as usize;
-             let suffix = get_endian_suffix(dtype);
-             if is_custom_size(dtype, std_bytes) {
-                 format!("custom {}-byte float{}", get_real_size(dtype), suffix)
-             } else {
-                 format!("float{}{}", bits, suffix)
-             }
-        },
+            let bits = float_size_to_bits(*size);
+            let std_bytes = (bits / 8) as usize;
+            let suffix = get_endian_suffix(dtype);
+            if is_custom_size(dtype, std_bytes) {
+                format!("custom {}-byte float{}", get_real_size(dtype), suffix)
+            } else {
+                format!("float{}{}", bits, suffix)
+            }
+        }
         TypeDescriptor::Boolean => "bool".to_string(),
         TypeDescriptor::Enum(e) => {
             if e.members.len() >= 5 {
                 format!("enum ({} options)", e.members.len())
             } else {
-                 let options: Vec<String> = e.members.iter().map(|m| m.name.clone()).collect();
-                 format!("enum ({})", options.join(", "))
+                let options: Vec<String> = e.members.iter().map(|m| m.name.clone()).collect();
+                format!("enum ({})", options.join(", "))
             }
-        },
+        }
         TypeDescriptor::Compound(c) => {
-            let fields: Vec<String> = c.fields.iter().map(|f| {
-                // Recursive call needs a Datatype. But CompoundField only has TypeDescriptor.
-                // We CANNOT easily get the inner Datatype from just TypeDescriptor here without reconstructing it or assuming default props.
-                // This is a limitation of the current recursion approach.
-                // However, for nested types in Compound, endianness is usually inherited or specified per field?
-                // `f.ty` is a TypeDescriptor. It doesn't carry the raw ID.
-                // So we can't call H5Tget_order on `f.ty`.
-                // We'll have to fall back to the simple formatter for nested types inside Compound/Array 
-                // unless we change how we traverse.
-                // For now, let's use a version of fmt that doesn't require Datatype for nested items.
-                format!("{}: {}", f.name, fmt_descriptor_short_nodefs(&f.ty))
-            }).collect();
+            let fields: Vec<String> = c
+                .fields
+                .iter()
+                .map(|f| {
+                    // Recursive call needs a Datatype. But CompoundField only has TypeDescriptor.
+                    // We CANNOT easily get the inner Datatype from just TypeDescriptor here without reconstructing it or assuming default props.
+                    // This is a limitation of the current recursion approach.
+                    // However, for nested types in Compound, endianness is usually inherited or specified per field?
+                    // `f.ty` is a TypeDescriptor. It doesn't carry the raw ID.
+                    // So we can't call H5Tget_order on `f.ty`.
+                    // We'll have to fall back to the simple formatter for nested types inside Compound/Array
+                    // unless we change how we traverse.
+                    // For now, let's use a version of fmt that doesn't require Datatype for nested items.
+                    format!("{}: {}", f.name, fmt_descriptor_short_nodefs(&f.ty))
+                })
+                .collect();
             format!("({})", fields.join(", "))
-        },
+        }
         TypeDescriptor::FixedArray(ty, len) => {
-             let mut dims = vec![*len];
-             let mut inner = ty;
-             while let TypeDescriptor::FixedArray(next_ty, next_len) = inner.as_ref() {
-                 dims.push(*next_len);
-                 inner = next_ty;
-             }
-             let shape_str = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ");
-             format!("{} array of {}", shape_str, fmt_descriptor_short_nodefs(inner))
-        },
+            let mut dims = vec![*len];
+            let mut inner = ty;
+            while let TypeDescriptor::FixedArray(next_ty, next_len) = inner.as_ref() {
+                dims.push(*next_len);
+                inner = next_ty;
+            }
+            let shape_str = dims
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(" × ");
+            format!(
+                "{} array of {}",
+                shape_str,
+                fmt_descriptor_short_nodefs(inner)
+            )
+        }
         TypeDescriptor::FixedAscii(len) => format!("{}-byte ASCII string", len),
         TypeDescriptor::FixedUnicode(len) => format!("{}-byte UTF-8 string", len),
-        TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short_nodefs(ty)),
+        TypeDescriptor::VarLenArray(ty) => {
+            format!("vlen array of {}", fmt_descriptor_short_nodefs(ty))
+        }
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
         TypeDescriptor::Reference(r) => match r {
@@ -347,29 +409,41 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
             if e.members.len() >= 5 {
                 format!("enum ({} options)", e.members.len())
             } else {
-                 let options: Vec<String> = e.members.iter().map(|m| m.name.clone()).collect();
-                 format!("enum ({})", options.join(", "))
+                let options: Vec<String> = e.members.iter().map(|m| m.name.clone()).collect();
+                format!("enum ({})", options.join(", "))
             }
-        },
+        }
         TypeDescriptor::Compound(c) => {
-            let fields: Vec<String> = c.fields.iter().map(|f| {
-                format!("{}: {}", f.name, fmt_descriptor_short_nodefs(&f.ty))
-            }).collect();
+            let fields: Vec<String> = c
+                .fields
+                .iter()
+                .map(|f| format!("{}: {}", f.name, fmt_descriptor_short_nodefs(&f.ty)))
+                .collect();
             format!("({})", fields.join(", "))
-        },
+        }
         TypeDescriptor::FixedArray(ty, len) => {
-             let mut dims = vec![*len];
-             let mut inner = ty;
-             while let TypeDescriptor::FixedArray(next_ty, next_len) = inner.as_ref() {
-                 dims.push(*next_len);
-                 inner = next_ty;
-             }
-             let shape_str = dims.iter().map(|d| d.to_string()).collect::<Vec<_>>().join(" × ");
-             format!("{} array of {}", shape_str, fmt_descriptor_short_nodefs(inner))
-        },
+            let mut dims = vec![*len];
+            let mut inner = ty;
+            while let TypeDescriptor::FixedArray(next_ty, next_len) = inner.as_ref() {
+                dims.push(*next_len);
+                inner = next_ty;
+            }
+            let shape_str = dims
+                .iter()
+                .map(|d| d.to_string())
+                .collect::<Vec<_>>()
+                .join(" × ");
+            format!(
+                "{} array of {}",
+                shape_str,
+                fmt_descriptor_short_nodefs(inner)
+            )
+        }
         TypeDescriptor::FixedAscii(len) => format!("{}-byte ASCII string", len),
         TypeDescriptor::FixedUnicode(len) => format!("{}-byte UTF-8 string", len),
-        TypeDescriptor::VarLenArray(ty) => format!("vlen array of {}", fmt_descriptor_short_nodefs(ty)),
+        TypeDescriptor::VarLenArray(ty) => {
+            format!("vlen array of {}", fmt_descriptor_short_nodefs(ty))
+        }
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
         TypeDescriptor::Reference(r) => match r {
@@ -383,10 +457,16 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
 const MAX_ATTR_STRING_ELEMS: usize = 200;
 const MAX_ATTR_ARRAY_ELEMS: usize = 10;
 const ATTR_ARRAY_EDGE: usize = 3;
-const ATTR_ARRAY_FORMAT: EllipsisConfig = EllipsisConfig { max_elems: MAX_ATTR_STRING_ELEMS, edge: ATTR_ARRAY_EDGE };
+const ATTR_ARRAY_FORMAT: EllipsisConfig = EllipsisConfig {
+    max_elems: MAX_ATTR_STRING_ELEMS,
+    edge: ATTR_ARRAY_EDGE,
+};
 
-
-pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat, truncate_strings: bool) -> String {
+pub fn format_attribute_value(
+    attr: &hdf5::Attribute,
+    fmt: &NumFormat,
+    truncate_strings: bool,
+) -> String {
     let dtype = match attr.dtype() {
         Ok(dt) => dt,
         Err(_) => return "unreadable".to_string(),
@@ -410,10 +490,22 @@ pub fn format_attribute_value(attr: &hdf5::Attribute, fmt: &NumFormat, truncate_
     }
 
     match desc {
-        TypeDescriptor::Integer(_) => attr.read_scalar::<i64>().map(|v| fmt_i64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
-        TypeDescriptor::Unsigned(_) => attr.read_scalar::<u64>().map(|v| fmt_u64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
-        TypeDescriptor::Float(_) => attr.read_scalar::<f64>().map(|v| fmt_f64(v, fmt)).unwrap_or_else(|_| "unreadable".to_string()),
-        TypeDescriptor::Boolean => attr.read_scalar::<bool>().map(|v| v.to_string()).unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Integer(_) => attr
+            .read_scalar::<i64>()
+            .map(|v| fmt_i64(v, fmt))
+            .unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Unsigned(_) => attr
+            .read_scalar::<u64>()
+            .map(|v| fmt_u64(v, fmt))
+            .unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Float(_) => attr
+            .read_scalar::<f64>()
+            .map(|v| fmt_f64(v, fmt))
+            .unwrap_or_else(|_| "unreadable".to_string()),
+        TypeDescriptor::Boolean => attr
+            .read_scalar::<bool>()
+            .map(|v| v.to_string())
+            .unwrap_or_else(|_| "unreadable".to_string()),
         TypeDescriptor::VarLenAscii
         | TypeDescriptor::VarLenUnicode
         | TypeDescriptor::FixedAscii(_)
@@ -429,12 +521,28 @@ fn format_string_attribute(
     truncate_strings: bool,
 ) -> Option<String> {
     match desc {
-        TypeDescriptor::VarLenAscii => format_varlen_attr::<VarLenAscii>(attr, shape, truncate_strings),
-        TypeDescriptor::VarLenUnicode => format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings),
-        TypeDescriptor::FixedAscii(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings, H5T_cset_t::H5T_CSET_ASCII)
-            .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
-        TypeDescriptor::FixedUnicode(len) => format_fixed_string_attr(attr, *len, shape, truncate_strings, H5T_cset_t::H5T_CSET_UTF8)
-            .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
+        TypeDescriptor::VarLenAscii => {
+            format_varlen_attr::<VarLenAscii>(attr, shape, truncate_strings)
+        }
+        TypeDescriptor::VarLenUnicode => {
+            format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)
+        }
+        TypeDescriptor::FixedAscii(len) => format_fixed_string_attr(
+            attr,
+            *len,
+            shape,
+            truncate_strings,
+            H5T_cset_t::H5T_CSET_ASCII,
+        )
+        .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
+        TypeDescriptor::FixedUnicode(len) => format_fixed_string_attr(
+            attr,
+            *len,
+            shape,
+            truncate_strings,
+            H5T_cset_t::H5T_CSET_UTF8,
+        )
+        .or_else(|| format_varlen_attr::<VarLenUnicode>(attr, shape, truncate_strings)),
         _ => None,
     }
 }
@@ -475,8 +583,11 @@ fn format_numeric_attribute_array(
     }
 }
 
-
-fn format_varlen_attr<T>(attr: &hdf5::Attribute, shape: &[usize], truncate_strings: bool) -> Option<String>
+fn format_varlen_attr<T>(
+    attr: &hdf5::Attribute,
+    shape: &[usize],
+    truncate_strings: bool,
+) -> Option<String>
 where
     T: H5Type + AsRef<str>,
 {
@@ -488,7 +599,10 @@ where
         return None;
     }
     let vec: Vec<T> = attr.read_raw().ok()?;
-    let values: Vec<String> = vec.iter().map(|v| maybe_truncate_string(v.as_ref(), truncate_strings)).collect();
+    let values: Vec<String> = vec
+        .iter()
+        .map(|v| maybe_truncate_string(v.as_ref(), truncate_strings))
+        .collect();
     format_string_array(values, shape)
 }
 
@@ -504,9 +618,14 @@ fn format_fixed_string_attr(
     }
     let values = read_fixed_string_attr(attr, len, shape, cset)?;
     if shape.is_empty() {
-        return values.first().map(|v| format_scalar_string(v, truncate_strings));
+        return values
+            .first()
+            .map(|v| format_scalar_string(v, truncate_strings));
     }
-    let truncated: Vec<String> = values.into_iter().map(|v| maybe_truncate_string(&v, truncate_strings)).collect();
+    let truncated: Vec<String> = values
+        .into_iter()
+        .map(|v| maybe_truncate_string(&v, truncate_strings))
+        .collect();
     format_string_array(truncated, shape)
 }
 
@@ -516,7 +635,11 @@ fn read_fixed_string_attr(
     shape: &[usize],
     cset: H5T_cset_t,
 ) -> Option<Vec<String>> {
-    let total = if shape.is_empty() { 1 } else { total_size_checked(shape)? };
+    let total = if shape.is_empty() {
+        1
+    } else {
+        total_size_checked(shape)?
+    };
     if len == 0 {
         return Some(vec![String::new(); total]);
     }
@@ -588,7 +711,12 @@ pub(crate) fn decode_fixed_bytes(bytes: &[u8], trim_spaces: bool) -> String {
     String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
-fn format_array_display(values: Vec<String>, shape: &[usize], quote_strings: bool, max_elems: usize) -> Option<String> {
+fn format_array_display(
+    values: Vec<String>,
+    shape: &[usize],
+    quote_strings: bool,
+    max_elems: usize,
+) -> Option<String> {
     let total = total_size_checked(shape)?;
     if total != values.len() {
         return None;
@@ -597,15 +725,16 @@ fn format_array_display(values: Vec<String>, shape: &[usize], quote_strings: boo
         return None;
     }
     let arr = ArrayD::from_shape_vec(IxDyn(shape), values).ok()?;
-    Some(array_format::format_string_array_with_ellipsis(&arr, ATTR_ARRAY_FORMAT, quote_strings))
+    Some(array_format::format_string_array_with_ellipsis(
+        &arr,
+        ATTR_ARRAY_FORMAT,
+        quote_strings,
+    ))
 }
 
 fn format_string_array(values: Vec<String>, shape: &[usize]) -> Option<String> {
     format_array_display(values, shape, true, MAX_ATTR_STRING_ELEMS)
 }
-
-
-
 
 fn string_array_too_large(shape: &[usize]) -> bool {
     if shape.is_empty() {
@@ -627,7 +756,6 @@ fn format_scalar_string(value: &str, truncate: bool) -> String {
     }
 }
 
-
 fn maybe_truncate_string(value: &str, truncate: bool) -> String {
     if truncate && value.len() > 50 {
         let head = utf8_prefix_by_bytes(value, 20);
@@ -638,13 +766,9 @@ fn maybe_truncate_string(value: &str, truncate: bool) -> String {
     }
 }
 
-
 fn total_size_checked(shape: &[usize]) -> Option<usize> {
     shape.iter().try_fold(1usize, |acc, &d| acc.checked_mul(d))
 }
-
-
-
 
 fn utf8_prefix_by_bytes(s: &str, max_bytes: usize) -> &str {
     if s.len() <= max_bytes {
@@ -697,7 +821,7 @@ fn float_size_to_bits(size: FloatSize) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hdf5::types::{EnumType, CompoundType, CompoundField, VarLenUnicode, FixedAscii};
+    use hdf5::types::{CompoundField, CompoundType, EnumType, FixedAscii, VarLenUnicode};
     use ndarray::array;
     use std::str::FromStr;
     use std::sync::Mutex;
@@ -740,8 +864,18 @@ mod tests {
     fn test_compound() {
         let ct = TypeDescriptor::Compound(CompoundType {
             fields: vec![
-                CompoundField { name: "x".to_string(), ty: TypeDescriptor::Float(FloatSize::U4), offset: 0, index: 0 },
-                CompoundField { name: "y".to_string(), ty: TypeDescriptor::Float(FloatSize::U4), offset: 4, index: 1 },
+                CompoundField {
+                    name: "x".to_string(),
+                    ty: TypeDescriptor::Float(FloatSize::U4),
+                    offset: 0,
+                    index: 0,
+                },
+                CompoundField {
+                    name: "y".to_string(),
+                    ty: TypeDescriptor::Float(FloatSize::U4),
+                    offset: 4,
+                    index: 1,
+                },
             ],
             size: 8,
         });
@@ -752,8 +886,14 @@ mod tests {
     fn test_enum() {
         let et = TypeDescriptor::Enum(EnumType {
             members: vec![
-                hdf5::types::EnumMember { name: "apple".to_string(), value: 1 },
-                hdf5::types::EnumMember { name: "banana".to_string(), value: 2 },
+                hdf5::types::EnumMember {
+                    name: "apple".to_string(),
+                    value: 1,
+                },
+                hdf5::types::EnumMember {
+                    name: "banana".to_string(),
+                    value: 2,
+                },
             ],
             size: IntSize::U1,
             signed: false,
@@ -825,11 +965,22 @@ mod tests {
             use hdf5::File;
 
             let mut path = std::env::temp_dir();
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            path.push(format!("h5peek_attr_utf8_{}_{}.h5", std::process::id(), nanos));
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            path.push(format!(
+                "h5peek_attr_utf8_{}_{}.h5",
+                std::process::id(),
+                nanos
+            ));
 
             let file = File::create(&path).unwrap();
-            let attr = file.new_attr::<VarLenUnicode>().shape(()).create("utf8_attr").unwrap();
+            let attr = file
+                .new_attr::<VarLenUnicode>()
+                .shape(())
+                .create("utf8_attr")
+                .unwrap();
 
             let unit = "\u{00E9}";
             let long = unit.repeat(60);
@@ -851,8 +1002,15 @@ mod tests {
             use hdf5::File;
 
             let mut path = std::env::temp_dir();
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            path.push(format!("h5peek_attr_utf8_arr_{}_{}.h5", std::process::id(), nanos));
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            path.push(format!(
+                "h5peek_attr_utf8_arr_{}_{}.h5",
+                std::process::id(),
+                nanos
+            ));
 
             let file = File::create(&path).unwrap();
             let attr = file
@@ -889,8 +1047,15 @@ mod tests {
             use hdf5::File;
 
             let mut path = std::env::temp_dir();
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            path.push(format!("h5peek_attr_ascii_arr_{}_{}.h5", std::process::id(), nanos));
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            path.push(format!(
+                "h5peek_attr_ascii_arr_{}_{}.h5",
+                std::process::id(),
+                nanos
+            ));
 
             let file = File::create(&path).unwrap();
             let attr = file
@@ -920,8 +1085,15 @@ mod tests {
             use hdf5::File;
 
             let mut path = std::env::temp_dir();
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-            path.push(format!("h5peek_attr_num_arr_{}_{}.h5", std::process::id(), nanos));
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            path.push(format!(
+                "h5peek_attr_num_arr_{}_{}.h5",
+                std::process::id(),
+                nanos
+            ));
 
             let file = File::create(&path).unwrap();
             let attr = file
@@ -941,5 +1113,4 @@ mod tests {
             let _ = std::fs::remove_file(path);
         });
     }
-
 }

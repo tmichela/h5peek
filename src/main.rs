@@ -1,17 +1,16 @@
-use clap::{Parser, ArgAction, ValueEnum};
-use std::path::PathBuf;
-use anyhow::{Result, Context};
+use anyhow::{Context, Result};
+use clap::{ArgAction, Parser, ValueEnum};
 use std::io::IsTerminal;
+use std::path::PathBuf;
 use std::process::exit;
 
-
-mod tree;
-mod dataset;
-mod utils;
-mod completer;
-mod slicing;
-mod plot;
 mod array_format;
+mod completer;
+mod dataset;
+mod plot;
+mod slicing;
+mod tree;
+mod utils;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -98,7 +97,6 @@ fn install_broken_pipe_handler() {
         default_hook(info);
     }));
 }
-
 
 fn resolve_pager_command(args: &Args) -> Option<String> {
     if args.no_pager {
@@ -223,7 +221,11 @@ fn handle_target(
         let root_name = if path_str == "/" {
             format!("{}", args.file.display())
         } else {
-            format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
+            format!(
+                "{}/{}",
+                args.file.display(),
+                path_str.trim_start_matches('/')
+            )
         };
 
         let printed = tree::print_group_tree(
@@ -246,7 +248,11 @@ fn handle_target(
                 return Ok(());
             }
         }
-        let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
+        let root_name = format!(
+            "{}/{}",
+            args.file.display(),
+            path_str.trim_start_matches('/')
+        );
         println!("{}", root_name);
         dataset::print_dataset_info(
             &ds,
@@ -261,7 +267,10 @@ fn handle_target(
         } else {
             eprintln!("Object not found: {}", path_str);
         }
-        eprintln!("Tip: use 'h5peek {} -' for interactive mode", args.file.display());
+        eprintln!(
+            "Tip: use 'h5peek {} -' for interactive mode",
+            args.file.display()
+        );
         exit(1);
     }
 
@@ -269,50 +278,52 @@ fn handle_target(
 }
 
 fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
+    use crate::completer::H5Completer;
+    use rustyline::config::Config;
     use rustyline::error::ReadlineError;
     use rustyline::Editor;
-    use rustyline::config::Config;
-    use crate::completer::H5Completer;
-    
+
     let config = Config::builder()
         .completion_type(rustyline::CompletionType::List)
         .build();
-        
+
     let h5_completer = H5Completer::new(file_path.clone());
     let mut rl = Editor::<H5Completer, rustyline::history::DefaultHistory>::with_config(config)?;
     rl.set_helper(Some(h5_completer));
-    
+
     println!("Interactive mode for {}", file_path.display());
-    
+
     loop {
         let readline = rl.readline(&format!("Object path: {}/", file_path.display()));
         match readline {
             Ok(line) => {
                 let line = line.trim();
-                if line.is_empty() { continue; }
-                
-                if let Ok(file) = hdf5::File::open(file_path) {
-                     let path_to_check = if line.starts_with('/') {
-                         line.to_string()
-                     } else {
-                         format!("/{}", line)
-                     };
-
-                     if file.link_exists(&path_to_check) {
-                         return Ok(path_to_check);
-                     } else {
-                         println!("No object at '{}'", line);
-                     }
+                if line.is_empty() {
+                    continue;
                 }
-            },
+
+                if let Ok(file) = hdf5::File::open(file_path) {
+                    let path_to_check = if line.starts_with('/') {
+                        line.to_string()
+                    } else {
+                        format!("/{}", line)
+                    };
+
+                    if file.link_exists(&path_to_check) {
+                        return Ok(path_to_check);
+                    } else {
+                        println!("No object at '{}'", line);
+                    }
+                }
+            }
             Err(ReadlineError::Interrupted) => {
                 println!("CTRL-C");
                 exit(0);
-            },
+            }
             Err(ReadlineError::Eof) => {
                 println!("CTRL-D");
                 exit(0);
-            },
+            }
             Err(err) => {
                 println!("Error: {:?}", err);
                 exit(1);
@@ -320,7 +331,6 @@ fn prompt_for_path(file_path: &PathBuf) -> Result<String> {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -360,13 +370,7 @@ mod tests {
     #[test]
     fn resolve_pager_command_no_pager_wins() {
         with_env_var("PAGER", Some("more"), || {
-            let args = Args::parse_from([
-                "h5peek",
-                "file.h5",
-                "--pager",
-                "most",
-                "--no-pager",
-            ]);
+            let args = Args::parse_from(["h5peek", "file.h5", "--pager", "most", "--no-pager"]);
             assert_eq!(resolve_pager_command(&args), None);
         });
     }

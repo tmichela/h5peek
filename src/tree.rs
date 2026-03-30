@@ -1,10 +1,10 @@
-use hdf5::{Group, Dataset};
-use colored::Colorize;
 use crate::utils;
 use anyhow::{anyhow, Result};
+use colored::Colorize;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
-use std::collections::{HashMap, HashSet};
+use hdf5::{Dataset, Group};
 use natord::compare;
+use std::collections::{HashMap, HashSet};
 
 pub struct PathFilter {
     set: GlobSet,
@@ -29,7 +29,9 @@ impl PathFilter {
                 .map_err(|e| anyhow!("Invalid filter pattern '{}': {}", pattern, e))?;
             builder.add(glob);
         }
-        let set = builder.build().map_err(|e| anyhow!("Invalid filter patterns: {}", e))?;
+        let set = builder
+            .build()
+            .map_err(|e| anyhow!("Invalid filter patterns: {}", e))?;
         Ok(Self { set, substrings })
     }
 
@@ -130,7 +132,13 @@ impl<'a> TreePrinter<'a> {
         depth: usize,
         force_show: bool,
     ) -> Result<bool> {
-        let connector = if depth == 0 { "" } else if is_last { "└ " } else { "├ " };
+        let connector = if depth == 0 {
+            ""
+        } else if is_last {
+            "└ "
+        } else {
+            "├ "
+        };
         let filter = self.filter;
 
         // Check for visited (Hard Link cycle detection)
@@ -164,17 +172,43 @@ impl<'a> TreePrinter<'a> {
             if show_children {
                 for child in self.collect_children(g, &full_path)? {
                     match child {
-                        Child::Soft { name, target, full_path: child_full_path } => {
-                            if show_all_children || filter.is_none_or(|f| f.is_match(&child_full_path)) {
-                                child_entries.push(Child::Soft { name, target, full_path: child_full_path });
+                        Child::Soft {
+                            name,
+                            target,
+                            full_path: child_full_path,
+                        } => {
+                            if show_all_children
+                                || filter.is_none_or(|f| f.is_match(&child_full_path))
+                            {
+                                child_entries.push(Child::Soft {
+                                    name,
+                                    target,
+                                    full_path: child_full_path,
+                                });
                             }
                         }
-                        Child::External { name, file, path, full_path: child_full_path } => {
-                            if show_all_children || filter.is_none_or(|f| f.is_match(&child_full_path)) {
-                                child_entries.push(Child::External { name, file, path, full_path: child_full_path });
+                        Child::External {
+                            name,
+                            file,
+                            path,
+                            full_path: child_full_path,
+                        } => {
+                            if show_all_children
+                                || filter.is_none_or(|f| f.is_match(&child_full_path))
+                            {
+                                child_entries.push(Child::External {
+                                    name,
+                                    file,
+                                    path,
+                                    full_path: child_full_path,
+                                });
                             }
                         }
-                        Child::Node { name, node: child_node, full_path: child_full_path } => {
+                        Child::Node {
+                            name,
+                            node: child_node,
+                            full_path: child_full_path,
+                        } => {
                             let child_should_print = if show_all_children {
                                 true
                             } else if filter.is_some() {
@@ -184,7 +218,11 @@ impl<'a> TreePrinter<'a> {
                             };
 
                             if child_should_print {
-                                child_entries.push(Child::Node { name, node: child_node, full_path: child_full_path });
+                                child_entries.push(Child::Node {
+                                    name,
+                                    node: child_node,
+                                    full_path: child_full_path,
+                                });
                             }
                         }
                     }
@@ -235,13 +273,23 @@ impl<'a> TreePrinter<'a> {
 
         println!("{}{}{}{}", prefix, connector, display_name, final_info);
 
-        let child_prefix_base = if depth == 0 { "" } else if is_last { "  " } else { "│ " };
+        let child_prefix_base = if depth == 0 {
+            ""
+        } else if is_last {
+            "  "
+        } else {
+            "│ "
+        };
         let child_prefix = format!("{}{}", prefix, child_prefix_base);
 
         if self.expand_attrs && n_attrs > 0 {
             match &node {
-                Node::Group(g) => print_attrs(g, &child_prefix, self.fmt, self.truncate_attr_strings)?,
-                Node::Dataset(d) => print_attrs(d, &child_prefix, self.fmt, self.truncate_attr_strings)?,
+                Node::Group(g) => {
+                    print_attrs(g, &child_prefix, self.fmt, self.truncate_attr_strings)?
+                }
+                Node::Dataset(d) => {
+                    print_attrs(d, &child_prefix, self.fmt, self.truncate_attr_strings)?
+                }
             }
         }
 
@@ -252,23 +300,55 @@ impl<'a> TreePrinter<'a> {
                     let is_last_child = i == n_members - 1;
 
                     match entry {
-                        Child::Soft { name: member_name, target, .. } => {
+                        Child::Soft {
+                            name: member_name,
+                            target,
+                            ..
+                        } => {
                             let connector = if is_last_child { "└" } else { "├" };
-                            println!("{}{}{} -> {}", child_prefix, connector, member_name.bright_magenta(), target);
+                            println!(
+                                "{}{}{} -> {}",
+                                child_prefix,
+                                connector,
+                                member_name.bright_magenta(),
+                                target
+                            );
                             continue;
                         }
-                        Child::External { name: member_name, file, path, .. } => {
+                        Child::External {
+                            name: member_name,
+                            file,
+                            path,
+                            ..
+                        } => {
                             let connector = if is_last_child { "└" } else { "├" };
                             let display_target = if path.starts_with('/') {
                                 format!("{}{}", file, path)
                             } else {
                                 format!("{}/{}", file, path)
                             };
-                            println!("{}{}{} -> {}", child_prefix, connector, member_name.bright_magenta(), display_target);
+                            println!(
+                                "{}{}{} -> {}",
+                                child_prefix,
+                                connector,
+                                member_name.bright_magenta(),
+                                display_target
+                            );
                             continue;
                         }
-                        Child::Node { name: member_name, node: child_node, .. } => {
-                            self.print_node(child_node, &member_name, &child_prefix, is_last_child, depth + 1, show_all_children)?;
+                        Child::Node {
+                            name: member_name,
+                            node: child_node,
+                            ..
+                        } => {
+                            self.print_node(
+                                child_node,
+                                &member_name,
+                                &child_prefix,
+                                is_last_child,
+                                depth + 1,
+                                show_all_children,
+                            )?;
                         }
                     };
                 }
@@ -310,8 +390,14 @@ impl<'a> TreePrinter<'a> {
 
         for child in self.collect_children(g, &full_path)? {
             match child {
-                Child::Soft { full_path: child_full_path, .. }
-                | Child::External { full_path: child_full_path, .. } => {
+                Child::Soft {
+                    full_path: child_full_path,
+                    ..
+                }
+                | Child::External {
+                    full_path: child_full_path,
+                    ..
+                } => {
                     if filter.is_match(&child_full_path) {
                         if addr != 0 {
                             self.filter_guard.remove(&addr);
@@ -319,7 +405,9 @@ impl<'a> TreePrinter<'a> {
                         return Ok(true);
                     }
                 }
-                Child::Node { node: child_node, .. } => {
+                Child::Node {
+                    node: child_node, ..
+                } => {
                     if self.node_matches_or_descendant(&child_node, depth + 1)? {
                         if addr != 0 {
                             self.filter_guard.remove(&addr);
@@ -347,11 +435,20 @@ impl<'a> TreePrinter<'a> {
             let child_full_path = join_hdf5_path(parent_path, &member_name);
             match utils::get_link_info(group.id(), &member_name) {
                 utils::LinkInfo::Soft(target) => {
-                    children.push(Child::Soft { name: member_name, target, full_path: child_full_path });
+                    children.push(Child::Soft {
+                        name: member_name,
+                        target,
+                        full_path: child_full_path,
+                    });
                     continue;
                 }
                 utils::LinkInfo::External { file, path } => {
-                    children.push(Child::External { name: member_name, file, path, full_path: child_full_path });
+                    children.push(Child::External {
+                        name: member_name,
+                        file,
+                        path,
+                        full_path: child_full_path,
+                    });
                     continue;
                 }
                 _ => {}
@@ -365,24 +462,33 @@ impl<'a> TreePrinter<'a> {
                 continue;
             };
 
-            children.push(Child::Node { name: member_name, node: child_node, full_path: child_full_path });
+            children.push(Child::Node {
+                name: member_name,
+                node: child_node,
+                full_path: child_full_path,
+            });
         }
 
         Ok(children)
     }
 }
 
-fn print_attrs(obj: &hdf5::Location, prefix: &str, fmt: &utils::NumFormat, truncate_attr_strings: bool) -> Result<()> {
-     let attrs = obj.attr_names()?;
-     let n = attrs.len();
-     println!("{}│ {} attributes:", prefix, n.to_string().yellow());
-     
-     for name in attrs {
-         let attr = obj.attr(&name)?;
-         let value = utils::format_attribute_value(&attr, fmt, truncate_attr_strings);
-         println!("{}│  {}: {}", prefix, name, value);
-     }
-     Ok(())
+fn print_attrs(
+    obj: &hdf5::Location,
+    prefix: &str,
+    fmt: &utils::NumFormat,
+    truncate_attr_strings: bool,
+) -> Result<()> {
+    let attrs = obj.attr_names()?;
+    let n = attrs.len();
+    println!("{}│ {} attributes:", prefix, n.to_string().yellow());
+
+    for name in attrs {
+        let attr = obj.attr(&name)?;
+        let value = utils::format_attribute_value(&attr, fmt, truncate_attr_strings);
+        println!("{}│  {}: {}", prefix, name, value);
+    }
+    Ok(())
 }
 
 fn join_hdf5_path(parent: &str, child: &str) -> String {
@@ -394,9 +500,22 @@ fn join_hdf5_path(parent: &str, child: &str) -> String {
 }
 
 enum Child {
-    Node { name: String, node: Node, full_path: String },
-    Soft { name: String, target: String, full_path: String },
-    External { name: String, file: String, path: String, full_path: String },
+    Node {
+        name: String,
+        node: Node,
+        full_path: String,
+    },
+    Soft {
+        name: String,
+        target: String,
+        full_path: String,
+    },
+    External {
+        name: String,
+        file: String,
+        path: String,
+        full_path: String,
+    },
 }
 
 #[cfg(test)]
@@ -405,7 +524,8 @@ mod tests {
 
     #[test]
     fn path_filter_matches_normalized_patterns() {
-        let filter = PathFilter::new(&vec!["data".to_string(), "/entry/*/meta".to_string()]).unwrap();
+        let filter =
+            PathFilter::new(&vec!["data".to_string(), "/entry/*/meta".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(filter.is_match("/entry/run/meta"));
         assert!(filter.is_match("/entry/foo/data/bar"));
