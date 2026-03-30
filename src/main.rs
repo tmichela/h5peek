@@ -116,26 +116,66 @@ fn resolve_pager_command(args: &Args) -> Option<String> {
 fn main() -> Result<()> {
     install_broken_pipe_handler();
     let args = Args::parse();
-    
-    if !args.file.exists() {
-        eprintln!("File not found: {:?}", args.file);
-        exit(2);
-    }
-    if !args.file.is_file() {
-        eprintln!("Not a file: {:?}", args.file);
-        exit(2);
-    }
+    run(args)
+}
+
+fn run(args: Args) -> Result<()> {
+    validate_file(&args.file);
 
     let file = hdf5::File::open(&args.file).context("Failed to open HDF5 file")?;
+    let path_str = resolve_target_path(&args)?;
 
-    let path_str = match args.path.as_deref() {
-        Some("-") => prompt_for_path(&args.file)?,
-        Some(p) => p.to_string(),
-        None => "/".to_string(),
+    configure_output(&args);
+
+    let array_format = utils::NumFormat {
+        precision: args.precision,
+        scientific: args.scientific,
     };
+    let scalar_format = utils::NumFormat::scalar();
+    let truncate_attr_strings = !args.no_attr_truncate;
+    let filter = build_filter(&args)?;
 
+    handle_target(
+        &file,
+        &path_str,
+        &args,
+        &array_format,
+        &scalar_format,
+        truncate_attr_strings,
+        filter.as_ref(),
+    )
+}
+
+fn validate_file(path: &PathBuf) {
+    if !path.exists() {
+        eprintln!("File not found: {:?}", path);
+        exit(2);
+    }
+    if !path.is_file() {
+        eprintln!("Not a file: {:?}", path);
+        exit(2);
+    }
+}
+
+fn resolve_target_path(args: &Args) -> Result<String> {
+    match args.path.as_deref() {
+        Some("-") => prompt_for_path(&args.file),
+        Some(p) => Ok(p.to_string()),
+        None => Ok("/".to_string()),
+    }
+}
+
+fn build_filter(args: &Args) -> Result<Option<tree::PathFilter>> {
+    if args.filter.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(tree::PathFilter::new(&args.filter)?))
+    }
+}
+
+fn configure_output(args: &Args) {
     let no_color_env = std::env::var_os("NO_COLOR").is_some();
-    let pager_cmd = resolve_pager_command(&args);
+    let pager_cmd = resolve_pager_command(args);
 
     if pager_cmd.is_some() && std::io::stdout().is_terminal() {
         if std::env::var("LESSCHARSET").is_err() {
@@ -163,40 +203,44 @@ fn main() -> Result<()> {
             }
         }
     }
+}
 
-    let array_format = utils::NumFormat {
-        precision: args.precision,
-        scientific: args.scientific,
-    };
-    let scalar_format = utils::NumFormat::scalar();
-
-    let truncate_attr_strings = !args.no_attr_truncate;
-
-    let filter = if args.filter.is_empty() {
-        None
-    } else {
-        Some(tree::PathFilter::new(&args.filter)?)
-    };
-
-    if let Ok(group) = file.group(&path_str) {
+fn handle_target(
+    file: &hdf5::File,
+    path_str: &str,
+    args: &Args,
+    array_format: &utils::NumFormat,
+    scalar_format: &utils::NumFormat,
+    truncate_attr_strings: bool,
+    filter: Option<&tree::PathFilter>,
+) -> Result<()> {
+    if let Ok(group) = file.group(path_str) {
         if args.slice.is_some() {
-             eprintln!("Slicing is only allowed for datasets");
-             exit(1);
+            eprintln!("Slicing is only allowed for datasets");
+            exit(1);
         }
-        
+
         let root_name = if path_str == "/" {
             format!("{}", args.file.display())
         } else {
             format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'))
         };
-        
-        let printed = tree::print_group_tree(&group, &root_name, args.attrs, args.depth, !args.unsorted, filter.as_ref(), &scalar_format, truncate_attr_strings)?;
+
+        let printed = tree::print_group_tree(
+            &group,
+            &root_name,
+            args.attrs,
+            args.depth,
+            !args.unsorted,
+            filter,
+            scalar_format,
+            truncate_attr_strings,
+        )?;
         if !printed && filter.is_some() {
             eprintln!("No paths matched the filter");
         }
-        
-    } else if let Ok(ds) = file.dataset(&path_str) {
-        if let Some(filter) = filter.as_ref() {
+    } else if let Ok(ds) = file.dataset(path_str) {
+        if let Some(filter) = filter {
             if !filter.is_match(&ds.name()) {
                 eprintln!("No paths matched the filter");
                 return Ok(());
@@ -204,9 +248,15 @@ fn main() -> Result<()> {
         }
         let root_name = format!("{}/{}", args.file.display(), path_str.trim_start_matches('/'));
         println!("{}", root_name);
-        dataset::print_dataset_info(&ds, args.slice.as_deref(), &array_format, &scalar_format, truncate_attr_strings)?;
+        dataset::print_dataset_info(
+            &ds,
+            args.slice.as_deref(),
+            array_format,
+            scalar_format,
+            truncate_attr_strings,
+        )?;
     } else {
-        if file.link_exists(&path_str) {
+        if file.link_exists(path_str) {
             eprintln!("Object exists but is not a group or dataset: {}", path_str);
         } else {
             eprintln!("Object not found: {}", path_str);
