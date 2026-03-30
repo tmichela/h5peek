@@ -38,6 +38,28 @@ enum PlotMode {
     Disabled,
 }
 
+#[derive(Clone, Copy)]
+enum DisplayMode {
+    Preview,
+    Full,
+}
+
+impl DisplayMode {
+    fn format_debug<T: std::fmt::Debug>(self, arr: &ArrayD<T>) -> String {
+        match self {
+            DisplayMode::Preview => format_array_with_ellipsis(arr),
+            DisplayMode::Full => format_array_full(arr),
+        }
+    }
+
+    fn format_strings(self, arr: &ArrayD<String>, quote_strings: bool) -> String {
+        match self {
+            DisplayMode::Preview => format_array_with_ellipsis_display(arr, quote_strings),
+            DisplayMode::Full => format_array_full_display(arr, quote_strings),
+        }
+    }
+}
+
 fn print_dataset_summary(
     dtype: &hdf5::Datatype,
     desc: Option<&TypeDescriptor>,
@@ -120,7 +142,7 @@ fn print_dataset_preview(
         println!("\nselected data [{}]:", expr);
         let selection = slicing::parse_slice(expr, &ds.shape())
             .map_err(|e| anyhow!("Error parsing slice: {}", e))?;
-        print_selection_data(ds, selection, array_fmt, PlotMode::Selection)
+        print_selection_data(ds, selection, array_fmt, PlotMode::Selection, DisplayMode::Full)
             .map_err(|e| anyhow!("Error reading sliced data: {}", e))?;
     } else if ds.ndim() == 0 {
         print_scalar(ds, scalar_fmt)?;
@@ -161,7 +183,13 @@ fn elem_count_u64(shape: &[usize]) -> Option<u64> {
     }
 }
 
-fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumFormat, plot_mode: PlotMode) -> Result<()> {
+fn print_selection_data(
+    ds: &Dataset,
+    selection: Selection,
+    fmt: &utils::NumFormat,
+    plot_mode: PlotMode,
+    display_mode: DisplayMode,
+) -> Result<()> {
     let dtype = ds.dtype()?;
     let desc = match dtype.to_descriptor() {
         Ok(d) => d,
@@ -183,7 +211,7 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_numeric::<i64>(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<i64>(ds, selection, fmt, plot_mode, display_mode)
         }
         TypeDescriptor::Unsigned(_) => {
             let size = dtype.size();
@@ -191,16 +219,20 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
                 println!("(data display not supported for integer size {} bytes)", size);
                 return Ok(());
             }
-            print_selection_numeric::<u64>(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<u64>(ds, selection, fmt, plot_mode, display_mode)
         }
         TypeDescriptor::Float(_) => {
-            print_selection_numeric::<f64>(ds, selection, fmt, plot_mode)
+            print_selection_numeric::<f64>(ds, selection, fmt, plot_mode, display_mode)
         }
-        TypeDescriptor::Boolean => print_selection::<bool>(ds, selection),
-        TypeDescriptor::VarLenUnicode => print_selection_varlen_string::<VarLenUnicode>(ds, selection),
-        TypeDescriptor::VarLenAscii => print_selection_varlen_string::<VarLenAscii>(ds, selection),
+        TypeDescriptor::Boolean => print_selection::<bool>(ds, selection, display_mode),
+        TypeDescriptor::VarLenUnicode => {
+            print_selection_varlen_string::<VarLenUnicode>(ds, selection, display_mode)
+        }
+        TypeDescriptor::VarLenAscii => {
+            print_selection_varlen_string::<VarLenAscii>(ds, selection, display_mode)
+        }
         TypeDescriptor::FixedAscii(len) | TypeDescriptor::FixedUnicode(len) => {
-            print_selection_fixed_string(ds, selection, *len)
+            print_selection_fixed_string(ds, selection, *len, display_mode)
         }
         TypeDescriptor::Compound(compound) => print_selection_compound(ds, selection, compound),
         _ => {
@@ -210,12 +242,13 @@ fn print_selection_data(ds: &Dataset, selection: Selection, fmt: &utils::NumForm
     }
 }
 
-fn print_selection<T>(ds: &Dataset, selection: Selection) -> Result<()> 
-where T: H5Type + std::fmt::Debug
+fn print_selection<T>(ds: &Dataset, selection: Selection, display_mode: DisplayMode) -> Result<()>
+where
+    T: H5Type + std::fmt::Debug,
 {
     // Use read_slice which handles multi-dim selections correctly in hdf5-metno
     let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
-    println!("{}", format_array_with_ellipsis(&arr));
+    println!("{}", display_mode.format_debug(&arr));
     Ok(())
 }
 
@@ -259,32 +292,42 @@ fn print_selection_numeric<T>(
     selection: Selection,
     fmt: &utils::NumFormat,
     plot_mode: PlotMode,
+    display_mode: DisplayMode,
 ) -> Result<()>
 where
     T: NumericFormat,
 {
     let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v| v.format_value(fmt));
-    println!("{}", format_array_with_ellipsis_display(&s_arr, false));
+    println!("{}", display_mode.format_strings(&s_arr, false));
     if plot_mode == PlotMode::Selection {
         maybe_print_plot_from_array(&arr);
     }
     Ok(())
 }
 
-fn print_selection_varlen_string<T>(ds: &Dataset, selection: Selection) -> Result<()>
+fn print_selection_varlen_string<T>(
+    ds: &Dataset,
+    selection: Selection,
+    display_mode: DisplayMode,
+) -> Result<()>
 where
     T: H5Type + AsRef<str>,
 {
     let arr: ArrayD<T> = ds.read_slice::<T, _, IxDyn>(selection)?;
     let s_arr = arr.map(|v: &T| v.as_ref().to_string());
-    println!("{}", format_array_with_ellipsis_display(&s_arr, true));
+    println!("{}", display_mode.format_strings(&s_arr, true));
     Ok(())
 }
 
-fn print_selection_fixed_string(ds: &Dataset, selection: Selection, len: usize) -> Result<()> {
+fn print_selection_fixed_string(
+    ds: &Dataset,
+    selection: Selection,
+    len: usize,
+    display_mode: DisplayMode,
+) -> Result<()> {
     let arr = read_fixed_string_selection(ds, selection, len)?;
-    println!("{}", format_array_with_ellipsis_display(&arr, true));
+    println!("{}", display_mode.format_strings(&arr, true));
     Ok(())
 }
 
@@ -447,13 +490,13 @@ fn print_sample_data(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
         }
         let sample_expr = sample_parts.join(",");
         if let Ok(selection) = slicing::parse_slice(&sample_expr, &shape) {
-            print_selection_data(ds, selection, fmt, PlotMode::Disabled)?;
+            print_selection_data(ds, selection, fmt, PlotMode::Disabled, DisplayMode::Preview)?;
             plot_full_dataset_1d(ds)?;
             return Ok(());
         }
     }
 
-    print_selection_data(ds, Selection::new(..), fmt, PlotMode::Disabled)?;
+    print_selection_data(ds, Selection::new(..), fmt, PlotMode::Disabled, DisplayMode::Preview)?;
     plot_full_dataset_1d(ds)?;
     Ok(())
 }
@@ -631,6 +674,14 @@ fn format_array_with_ellipsis<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {
 
 fn format_array_with_ellipsis_display(arr: &ArrayD<String>, quote_strings: bool) -> String {
     array_format::format_string_array_with_ellipsis(arr, ARRAY_FORMAT, quote_strings)
+}
+
+fn format_array_full<T: std::fmt::Debug>(arr: &ArrayD<T>) -> String {
+    format!("{:?}", arr)
+}
+
+fn format_array_full_display(arr: &ArrayD<String>, quote_strings: bool) -> String {
+    array_format::format_string_array_full(arr, quote_strings)
 }
 
 fn compound_has_vlen(compound: &CompoundType) -> bool {
