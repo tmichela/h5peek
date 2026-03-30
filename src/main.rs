@@ -228,16 +228,14 @@ fn handle_target(
             )
         };
 
-        let printed = tree::print_group_tree(
-            &group,
-            &root_name,
-            args.attrs,
-            args.depth,
-            !args.unsorted,
-            filter,
-            scalar_format,
-            truncate_attr_strings,
-        )?;
+        let mut tree_opts = tree::TreePrintOptions::new(*scalar_format);
+        tree_opts.expand_attrs = args.attrs;
+        tree_opts.max_depth = args.depth;
+        tree_opts.sort_members = !args.unsorted;
+        tree_opts.filter = filter;
+        tree_opts.truncate_attr_strings = truncate_attr_strings;
+
+        let printed = tree::print_group_tree(&group, &root_name, &tree_opts)?;
         if !printed && filter.is_some() {
             eprintln!("No paths matched the filter");
         }

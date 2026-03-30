@@ -7,6 +7,7 @@ pub struct EllipsisConfig {
 }
 
 impl EllipsisConfig {
+    #[allow(dead_code)]
     pub const fn new(max_elems: usize, edge: usize) -> Self {
         Self { max_elems, edge }
     }
