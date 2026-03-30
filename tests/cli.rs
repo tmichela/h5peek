@@ -1,10 +1,13 @@
-use assert_cmd::Command;
 use assert_cmd::cargo::cargo_bin_cmd;
+use assert_cmd::Command;
 use predicates::prelude::*;
 use predicates::str::{contains, is_match};
 
 mod common;
-use common::{create_external_link_fixture, create_fixed_ascii_array, create_varlen_ascii_array, create_varlen_ascii_scalar, sample_file_path, temp_h5_path};
+use common::{
+    create_external_link_fixture, create_fixed_ascii_array, create_varlen_ascii_array,
+    create_varlen_ascii_scalar, sample_file_path, temp_h5_path,
+};
 
 fn base_cmd() -> Command {
     let mut cmd = cargo_bin_cmd!("h5peek");
@@ -223,8 +226,16 @@ fn default_tree_output_is_sorted() {
         {
             let file = hdf5::File::create(&path).unwrap();
             let group = file.create_group("root").unwrap();
-            group.new_dataset_builder().with_data(&[1_i32]).create("zz_b").unwrap();
-            group.new_dataset_builder().with_data(&[2_i32]).create("aa_a").unwrap();
+            group
+                .new_dataset_builder()
+                .with_data(&[1_i32])
+                .create("zz_b")
+                .unwrap();
+            group
+                .new_dataset_builder()
+                .with_data(&[2_i32])
+                .create("aa_a")
+                .unwrap();
             file.flush().unwrap();
         }
 
@@ -246,9 +257,21 @@ fn default_tree_output_uses_natural_sort() {
         {
             let file = hdf5::File::create(&path).unwrap();
             let group = file.create_group("root").unwrap();
-            group.new_dataset_builder().with_data(&[1_i32]).create("group_2asdf").unwrap();
-            group.new_dataset_builder().with_data(&[2_i32]).create("group_10asdf").unwrap();
-            group.new_dataset_builder().with_data(&[3_i32]).create("group_1asdf").unwrap();
+            group
+                .new_dataset_builder()
+                .with_data(&[1_i32])
+                .create("group_2asdf")
+                .unwrap();
+            group
+                .new_dataset_builder()
+                .with_data(&[2_i32])
+                .create("group_10asdf")
+                .unwrap();
+            group
+                .new_dataset_builder()
+                .with_data(&[3_i32])
+                .create("group_1asdf")
+                .unwrap();
             file.flush().unwrap();
         }
 
@@ -284,9 +307,9 @@ fn external_link_formatting_avoids_double_slash() {
 
 #[test]
 fn non_group_or_dataset_object_reports_clear_error() {
-    use hdf5_sys::h5t::{H5Tcopy, H5Tclose, H5Tset_size, H5T_STD_I32LE};
-    use hdf5_sys::h5t::H5Tcommit2;
     use hdf5_sys::h5p::H5P_DEFAULT;
+    use hdf5_sys::h5t::H5Tcommit2;
+    use hdf5_sys::h5t::{H5Tclose, H5Tcopy, H5Tset_size, H5T_STD_I32LE};
     use std::ffi::CString;
 
     with_hdf5_lock(|| {
@@ -299,7 +322,14 @@ fn non_group_or_dataset_object_reports_clear_error() {
             assert!(H5Tset_size(tid, 4) >= 0);
 
             let name = CString::new("named_dtype").unwrap();
-            let status = H5Tcommit2(file.id(), name.as_ptr(), tid, H5P_DEFAULT, H5P_DEFAULT, H5P_DEFAULT);
+            let status = H5Tcommit2(
+                file.id(),
+                name.as_ptr(),
+                tid,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+                H5P_DEFAULT,
+            );
             assert!(status >= 0);
 
             H5Tclose(tid);
@@ -312,7 +342,9 @@ fn non_group_or_dataset_object_reports_clear_error() {
             .arg("/named_dtype")
             .assert()
             .failure()
-            .stderr(contains("Object exists but is not a group or dataset: /named_dtype"));
+            .stderr(contains(
+                "Object exists but is not a group or dataset: /named_dtype",
+            ));
 
         let _ = std::fs::remove_file(path);
     });
@@ -328,7 +360,9 @@ fn custom_int_size_is_handled_gracefully() {
             .arg("/custom_types/int48")
             .assert()
             .success()
-            .stdout(contains("data display not supported for integer size 6 bytes"));
+            .stdout(contains(
+                "data display not supported for integer size 6 bytes",
+            ));
     });
 }
 

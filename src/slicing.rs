@@ -41,12 +41,18 @@ fn parse_range(s: &str, dim_len: usize) -> Result<SliceInfoElem> {
             step: 1,
         });
     }
-    
+
     if !s.contains(':') {
-        let idx = s.parse::<isize>().map_err(|_| anyhow!("Invalid index: {}", original))?;
+        let idx = s
+            .parse::<isize>()
+            .map_err(|_| anyhow!("Invalid index: {}", original))?;
         let start = if idx < 0 { dim_len as isize + idx } else { idx };
         if start < 0 || start >= dim_len as isize {
-            return Err(anyhow!("Index {} out of bounds for dimension of length {}", original, dim_len));
+            return Err(anyhow!(
+                "Index {} out of bounds for dimension of length {}",
+                original,
+                dim_len
+            ));
         }
         return Ok(SliceInfoElem::Index(start));
     }
@@ -59,15 +65,36 @@ fn parse_range(s: &str, dim_len: usize) -> Result<SliceInfoElem> {
     let stop_s = if parts.len() > 1 { parts[1].trim() } else { "" };
     let step_s = if parts.len() > 2 { parts[2].trim() } else { "" };
 
-    let mut start = if start_s.is_empty() { 0 } else { start_s.parse::<isize>().map_err(|_| anyhow!("Invalid slice start: {}", start_s))? };
-    let mut stop = if stop_s.is_empty() { dim_len as isize } else { stop_s.parse::<isize>().map_err(|_| anyhow!("Invalid slice stop: {}", stop_s))? };
-    let step = if step_s.is_empty() { 1 } else { step_s.parse::<isize>().map_err(|_| anyhow!("Invalid slice step: {}", step_s))? };
+    let mut start = if start_s.is_empty() {
+        0
+    } else {
+        start_s
+            .parse::<isize>()
+            .map_err(|_| anyhow!("Invalid slice start: {}", start_s))?
+    };
+    let mut stop = if stop_s.is_empty() {
+        dim_len as isize
+    } else {
+        stop_s
+            .parse::<isize>()
+            .map_err(|_| anyhow!("Invalid slice stop: {}", stop_s))?
+    };
+    let step = if step_s.is_empty() {
+        1
+    } else {
+        step_s
+            .parse::<isize>()
+            .map_err(|_| anyhow!("Invalid slice step: {}", step_s))?
+    };
 
     if step == 0 {
         return Err(anyhow!("Slice step cannot be 0"));
     }
     if step < 0 {
-        return Err(anyhow!("Negative slice steps are not supported: {}", original));
+        return Err(anyhow!(
+            "Negative slice steps are not supported: {}",
+            original
+        ));
     }
 
     if start < 0 {

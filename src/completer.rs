@@ -1,11 +1,11 @@
+use hdf5::File;
 use rustyline::completion::{Completer, Pair};
-use rustyline::Context;
 use rustyline::error::ReadlineError;
 use rustyline::highlight::Highlighter;
 use rustyline::hint::Hinter;
 use rustyline::validate::Validator;
+use rustyline::Context;
 use rustyline::Helper;
-use hdf5::File;
 use std::path::PathBuf;
 
 pub struct H5Completer {
@@ -35,13 +35,9 @@ impl Completer for H5Completer {
         };
 
         // Determine the parent group path to list members from
-        let parent_path = if start > 0 {
-            &line[..start]
-        } else {
-            "/"
-        };
+        let parent_path = if start > 0 { &line[..start] } else { "/" };
 
-        // Open the file (we do this every time to ensure up-to-date info and avoid keeping a handle if not needed, 
+        // Open the file (we do this every time to ensure up-to-date info and avoid keeping a handle if not needed,
         // though keeping a handle would be more efficient)
         let file = match File::open(&self.file_path) {
             Ok(f) => f,
@@ -71,13 +67,13 @@ impl Completer for H5Completer {
                         // Check if it's a group to append '/'
                         // We try to open it as a group. This resolves links too.
                         let is_group = g.group(&member).is_ok();
-                        
+
                         let display = member.clone();
                         let mut replacement = member.clone();
                         if is_group {
                             replacement.push('/');
                         }
-                        
+
                         matches.push(Pair {
                             display,
                             replacement,
