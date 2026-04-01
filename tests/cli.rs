@@ -144,7 +144,8 @@ fn compound_dataset_display_is_graceful() {
             .assert()
             .success()
             .stdout(contains("sample data:"))
-            .stdout(contains("compound data"));
+            .stdout(contains("1.5"))
+            .stdout(contains("2.5"));
     });
 }
 

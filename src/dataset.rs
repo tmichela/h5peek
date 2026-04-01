@@ -5,9 +5,8 @@ use crate::slicing;
 use crate::utils;
 use anyhow::{anyhow, Result};
 use hdf5::plist::dataset_create::Layout;
-use hdf5::types::dyn_value::DynCompound;
 use hdf5::types::{CompoundType, FloatSize, IntSize, TypeDescriptor, VarLenAscii, VarLenUnicode};
-use hdf5::{Dataset, Dataspace, H5Type, Selection};
+use hdf5::{Dataset, Dataspace, Datatype, H5Type, Selection};
 use hdf5_sys::h5d::H5Dread;
 use hdf5_sys::h5p::H5P_DEFAULT;
 use hdf5_sys::h5t::{H5Tget_class, H5T_INTEGER};
@@ -381,12 +380,14 @@ fn print_selection_compound(
         println!("(compound data with variable-length fields is not supported for display)");
         return Ok(());
     }
-    if !compound_alignment_safe(compound) {
-        println!("(compound data display skipped: unaligned or unsupported layout)");
+    let packed = compound.to_packed_repr();
+    if !compound_descriptor_supported(&TypeDescriptor::Compound(packed.clone())) {
+        println!("(compound data contains unsupported field types)");
         return Ok(());
     }
 
-    let dtype = ds.dtype()?;
+    let mem_desc = TypeDescriptor::Compound(packed.clone());
+    let mem_dtype = Datatype::from_descriptor(&mem_desc)?;
     let obj_space = ds.space()?;
     let out_shape = selection.out_shape(obj_space.shape())?;
     let out_size: usize = out_shape.iter().product();
@@ -397,13 +398,13 @@ fn print_selection_compound(
 
     let fspace = obj_space.select(selection)?;
     let mspace = Dataspace::try_new(&out_shape)?;
-    let elem_size = dtype.size();
+    let elem_size = packed.size;
     let mut buf = vec![0u8; out_size * elem_size];
 
     let status = unsafe {
         H5Dread(
             ds.id(),
-            dtype.id(),
+            mem_dtype.id(),
             mspace.id(),
             fspace.id(),
             H5P_DEFAULT,
@@ -419,19 +420,24 @@ fn print_selection_compound(
     if include_index {
         headers.push("idx".to_string());
     }
-    headers.extend(compound.fields.iter().map(|f| f.name.clone()));
+    headers.extend(packed.fields.iter().map(|f| f.name.clone()));
 
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(out_size);
     for elem_idx in 0..out_size {
         let offset = elem_idx * elem_size;
         let elem_buf = &buf[offset..offset + elem_size];
-        let value = DynCompound::new(compound, elem_buf);
         let mut row: Vec<String> = Vec::with_capacity(headers.len());
         if include_index {
             row.push(format_index(elem_idx, &out_shape));
         }
-        for (_, field_val) in value.iter() {
-            row.push(format!("{:?}", field_val));
+        for field in &packed.fields {
+            let start = field.offset;
+            let end = start + field.ty.size();
+            if end > elem_buf.len() {
+                row.push("(out of bounds)".to_string());
+                continue;
+            }
+            row.push(format_compound_value(&field.ty, &elem_buf[start..end]));
         }
         rows.push(row);
     }
@@ -577,56 +583,25 @@ fn dtype_is_integer(dtype: &hdf5::Datatype) -> bool {
     unsafe { H5Tget_class(dtype.id()) == H5T_INTEGER }
 }
 
-fn alignment_for_descriptor(desc: &TypeDescriptor) -> Option<usize> {
+fn compound_descriptor_supported(desc: &TypeDescriptor) -> bool {
     match desc {
-        TypeDescriptor::Integer(size) => int_size_to_bytes(*size),
-        TypeDescriptor::Unsigned(size) => int_size_to_bytes(*size),
-        TypeDescriptor::Float(size) => float_size_to_bytes(*size),
-        TypeDescriptor::Boolean => Some(1),
-        TypeDescriptor::Enum(e) => int_size_to_bytes(e.size),
-        TypeDescriptor::FixedAscii(_) | TypeDescriptor::FixedUnicode(_) => Some(1),
-        TypeDescriptor::VarLenAscii
+        TypeDescriptor::Integer(_)
+        | TypeDescriptor::Unsigned(_)
+        | TypeDescriptor::Float(_)
+        | TypeDescriptor::Boolean
+        | TypeDescriptor::Enum(_)
+        | TypeDescriptor::FixedAscii(_)
+        | TypeDescriptor::FixedUnicode(_) => true,
+        TypeDescriptor::FixedArray(inner, _) => compound_descriptor_supported(inner),
+        TypeDescriptor::Compound(compound) => compound
+            .fields
+            .iter()
+            .all(|field| compound_descriptor_supported(&field.ty)),
+        TypeDescriptor::VarLenArray(_)
+        | TypeDescriptor::VarLenAscii
         | TypeDescriptor::VarLenUnicode
-        | TypeDescriptor::VarLenArray(_) => None,
-        TypeDescriptor::FixedArray(_, _) => None,
-        TypeDescriptor::Compound(_) => None,
-        TypeDescriptor::Reference(_) => None,
+        | TypeDescriptor::Reference(_) => false,
     }
-}
-
-fn int_size_to_bytes(size: IntSize) -> Option<usize> {
-    match size {
-        IntSize::U1 => Some(1),
-        IntSize::U2 => Some(2),
-        IntSize::U4 => Some(4),
-        IntSize::U8 => Some(8),
-    }
-}
-
-fn float_size_to_bytes(size: FloatSize) -> Option<usize> {
-    match size {
-        FloatSize::U4 => Some(4),
-        FloatSize::U8 => Some(8),
-    }
-}
-
-fn compound_alignment_safe(compound: &CompoundType) -> bool {
-    for field in &compound.fields {
-        let align = match alignment_for_descriptor(&field.ty) {
-            Some(a) if a > 0 => a,
-            _ => return false,
-        };
-        // We read into a `Vec<u8>` (alignment 1). To avoid misaligned
-        // dereferences in downstream dynamic parsing, only allow
-        // compounds whose fields have alignment 1.
-        if align != 1 {
-            return false;
-        }
-        if field.offset % align != 0 {
-            return false;
-        }
-    }
-    true
 }
 
 fn read_fixed_string_scalar(ds: &Dataset, len: usize) -> Result<String> {
@@ -841,6 +816,127 @@ fn format_row(cells: &[String], widths: &[usize]) -> String {
         parts.push(format!("{:<width$}", cell, width = *width));
     }
     parts.join("  ")
+}
+
+fn format_compound_value(desc: &TypeDescriptor, buf: &[u8]) -> String {
+    debug_assert_eq!(desc.size(), buf.len());
+    match desc {
+        TypeDescriptor::Integer(size) => format_signed_int(buf, *size),
+        TypeDescriptor::Unsigned(size) => format_unsigned_int(buf, *size),
+        TypeDescriptor::Float(size) => format_float(buf, *size),
+        TypeDescriptor::Boolean => format!("{}", buf.first().copied().unwrap_or(0) != 0),
+        TypeDescriptor::Enum(enum_type) => format_enum(enum_type, buf),
+        TypeDescriptor::FixedAscii(_) | TypeDescriptor::FixedUnicode(_) => {
+            let s = utils::decode_fixed_bytes(buf, true);
+            format!("{:?}", s)
+        }
+        TypeDescriptor::FixedArray(inner, len) => format_fixed_array(inner, *len, buf),
+        TypeDescriptor::Compound(compound) => format_compound_struct(compound, buf),
+        _ => "(unsupported)".to_string(),
+    }
+}
+
+fn format_signed_int(buf: &[u8], size: IntSize) -> String {
+    let value = match size {
+        IntSize::U1 => i8::from_ne_bytes(read_bytes::<1>(buf)) as i64,
+        IntSize::U2 => i16::from_ne_bytes(read_bytes::<2>(buf)) as i64,
+        IntSize::U4 => i32::from_ne_bytes(read_bytes::<4>(buf)) as i64,
+        IntSize::U8 => i64::from_ne_bytes(read_bytes::<8>(buf)),
+    };
+    format!("{:?}", value)
+}
+
+fn format_unsigned_int(buf: &[u8], size: IntSize) -> String {
+    let value = match size {
+        IntSize::U1 => u8::from_ne_bytes(read_bytes::<1>(buf)) as u64,
+        IntSize::U2 => u16::from_ne_bytes(read_bytes::<2>(buf)) as u64,
+        IntSize::U4 => u32::from_ne_bytes(read_bytes::<4>(buf)) as u64,
+        IntSize::U8 => u64::from_ne_bytes(read_bytes::<8>(buf)),
+    };
+    format!("{:?}", value)
+}
+
+fn format_float(buf: &[u8], size: FloatSize) -> String {
+    match size {
+        FloatSize::U4 => format!("{:?}", f32::from_ne_bytes(read_bytes::<4>(buf))),
+        FloatSize::U8 => format!("{:?}", f64::from_ne_bytes(read_bytes::<8>(buf))),
+    }
+}
+
+fn format_enum(enum_type: &hdf5::types::EnumType, buf: &[u8]) -> String {
+    let raw = read_unsigned(buf, enum_type.size);
+    if let Some(member) = enum_type.members.iter().find(|m| m.value == raw) {
+        return member.name.clone();
+    }
+    if enum_type.signed {
+        format!("{:?}", sign_extend(raw, enum_type.size))
+    } else {
+        format!("{:?}", raw)
+    }
+}
+
+fn format_fixed_array(inner: &TypeDescriptor, len: usize, buf: &[u8]) -> String {
+    let elem_size = inner.size();
+    if elem_size == 0 || len == 0 {
+        return "[]".to_string();
+    }
+
+    let show_all = len <= ARRAY_EDGE * 2;
+    let mut parts: Vec<String> = Vec::new();
+    let mut idx = 0usize;
+    while idx < len {
+        if !show_all && idx == ARRAY_EDGE {
+            parts.push("...".to_string());
+            idx = len - ARRAY_EDGE;
+            continue;
+        }
+
+        let start = idx * elem_size;
+        let end = start + elem_size;
+        if end > buf.len() {
+            parts.push("(out of bounds)".to_string());
+            break;
+        }
+        parts.push(format_compound_value(inner, &buf[start..end]));
+        idx += 1;
+    }
+    format!("[{}]", parts.join(", "))
+}
+
+fn format_compound_struct(compound: &CompoundType, buf: &[u8]) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(compound.fields.len());
+    for field in &compound.fields {
+        let start = field.offset;
+        let end = start + field.ty.size();
+        if end > buf.len() {
+            parts.push(format!("{}: (out of bounds)", field.name));
+            continue;
+        }
+        let value = format_compound_value(&field.ty, &buf[start..end]);
+        parts.push(format!("{}: {}", field.name, value));
+    }
+    format!("{{{}}}", parts.join(", "))
+}
+
+fn read_unsigned(buf: &[u8], size: IntSize) -> u64 {
+    match size {
+        IntSize::U1 => u8::from_ne_bytes(read_bytes::<1>(buf)) as u64,
+        IntSize::U2 => u16::from_ne_bytes(read_bytes::<2>(buf)) as u64,
+        IntSize::U4 => u32::from_ne_bytes(read_bytes::<4>(buf)) as u64,
+        IntSize::U8 => u64::from_ne_bytes(read_bytes::<8>(buf)),
+    }
+}
+
+fn sign_extend(value: u64, size: IntSize) -> i64 {
+    let bits = (size as u32) * 8;
+    let shift = 64 - bits;
+    ((value << shift) as i64) >> shift
+}
+
+fn read_bytes<const N: usize>(buf: &[u8]) -> [u8; N] {
+    let mut out = [0u8; N];
+    out.copy_from_slice(&buf[..N]);
+    out
 }
 
 #[cfg(test)]
