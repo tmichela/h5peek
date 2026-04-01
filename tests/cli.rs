@@ -150,6 +150,36 @@ fn compound_dataset_display_is_graceful() {
 }
 
 #[test]
+fn enum_dataset_displays_names() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        base_cmd()
+            .arg(&path)
+            .arg("/enums/colors")
+            .assert()
+            .success()
+            .stdout(contains("sample data:"))
+            .stdout(is_match("(?s)sample data:.*\\[RED, GREEN, BLUE, GREEN, RED\\]").unwrap());
+    });
+}
+
+#[test]
+fn enum_scalar_displays_name() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        base_cmd()
+            .arg(&path)
+            .arg("/enums/color_scalar")
+            .assert()
+            .success()
+            .stdout(contains("data:"))
+            .stdout(contains("GREEN"));
+    });
+}
+
+#[test]
 fn fixed_length_string_scalar_is_displayed() {
     with_hdf5_lock(|| {
         let path = sample_file_path();

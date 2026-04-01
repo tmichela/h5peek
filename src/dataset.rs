@@ -251,6 +251,10 @@ fn print_selection_data(
             print_selection::<bool>(ds, selection, display_mode)?;
             None
         }
+        TypeDescriptor::Enum(enum_type) => {
+            print_selection_enum(ds, selection, &enum_type, display_mode)?;
+            None
+        }
         TypeDescriptor::VarLenUnicode => {
             print_selection_varlen_string::<VarLenUnicode>(ds, selection, display_mode)?;
             None
@@ -368,6 +372,17 @@ fn print_selection_fixed_string(
 ) -> Result<()> {
     let arr = read_fixed_string_selection(ds, selection, len)?;
     println!("{}", display_mode.format_strings(&arr, true));
+    Ok(())
+}
+
+fn print_selection_enum(
+    ds: &Dataset,
+    selection: Selection,
+    enum_type: &hdf5::types::EnumType,
+    display_mode: DisplayMode,
+) -> Result<()> {
+    let arr = read_enum_selection(ds, selection, enum_type)?;
+    println!("{}", display_mode.format_strings(&arr, false));
     Ok(())
 }
 
@@ -497,6 +512,9 @@ fn print_scalar(ds: &Dataset, fmt: &utils::NumFormat) -> Result<()> {
             Ok(v) => println!("{}", v),
             Err(e) => println!("(failed to read scalar value: {e})"),
         },
+        TypeDescriptor::Enum(enum_type) => {
+            print_scalar_enum(ds, &enum_type);
+        }
         TypeDescriptor::VarLenUnicode => {
             print_scalar_varlen_string::<VarLenUnicode>(ds);
         }
@@ -530,6 +548,16 @@ where
 {
     match ds.read_scalar::<T>() {
         Ok(v) => println!("{}", v.as_ref()),
+        Err(e) => println!("(failed to read scalar value: {e})"),
+    }
+}
+
+fn print_scalar_enum(ds: &Dataset, enum_type: &hdf5::types::EnumType) {
+    match read_enum_selection(ds, Selection::new(..), enum_type) {
+        Ok(arr) => match arr.first() {
+            Some(value) => println!("{}", value),
+            None => println!("[]"),
+        },
         Err(e) => println!("(failed to read scalar value: {e})"),
     }
 }
@@ -650,6 +678,57 @@ fn read_fixed_string_selection(
         let end = start + len;
         let slice = &buf[start..end];
         out.push(utils::decode_fixed_bytes(slice, false));
+    }
+
+    ArrayD::from_shape_vec(IxDyn(&out_shape), out).map_err(|e| anyhow!(e))
+}
+
+fn read_enum_selection(
+    ds: &Dataset,
+    selection: Selection,
+    enum_type: &hdf5::types::EnumType,
+) -> Result<ArrayD<String>> {
+    let obj_space = ds.space()?;
+    let out_shape = selection.out_shape(obj_space.shape())?;
+    let out_size: usize = if out_shape.is_empty() {
+        1
+    } else {
+        out_shape.iter().product()
+    };
+    if out_size == 0 {
+        return ArrayD::from_shape_vec(IxDyn(&out_shape), Vec::new()).map_err(|e| anyhow!(e));
+    }
+
+    let fspace = obj_space.select(selection)?;
+    let mspace = Dataspace::try_new(&out_shape)?;
+    let elem_size = enum_type.size as usize;
+    let mem_desc = TypeDescriptor::Enum(enum_type.clone());
+    let mem_dtype = Datatype::from_descriptor(&mem_desc)?;
+    let mut buf = vec![0u8; out_size * elem_size];
+
+    let status = unsafe {
+        H5Dread(
+            ds.id(),
+            mem_dtype.id(),
+            mspace.id(),
+            fspace.id(),
+            H5P_DEFAULT,
+            buf.as_mut_ptr().cast(),
+        )
+    };
+    if status < 0 {
+        return Err(anyhow!("Error reading enum data"));
+    }
+
+    let mut out: Vec<String> = Vec::with_capacity(out_size);
+    for i in 0..out_size {
+        let start = i * elem_size;
+        let end = start + elem_size;
+        if end > buf.len() {
+            out.push("(out of bounds)".to_string());
+            continue;
+        }
+        out.push(format_enum(enum_type, &buf[start..end]));
     }
 
     ArrayD::from_shape_vec(IxDyn(&out_shape), out).map_err(|e| anyhow!(e))

@@ -34,6 +34,7 @@ def create_sample_file(filename="data/sample.h5"):
         dt_enum = h5py.enum_dtype({'RED': 0, 'GREEN': 1, 'BLUE': 2}, basetype=np.uint8)
         data_enum = np.array([0, 1, 2, 1, 0], dtype=np.uint8) # Written as raw ints, h5py attaches enum dtype
         dset_enum = g_enum.create_dataset("colors", data=data_enum, dtype=dt_enum)
+        g_enum.create_dataset("color_scalar", data=np.uint8(1), dtype=dt_enum)
 
         # 6. Attributes
         f.attrs['file_owner'] = 'Maintenance Bot'
