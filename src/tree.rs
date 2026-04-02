@@ -537,8 +537,7 @@ mod tests {
 
     #[test]
     fn path_filter_matches_normalized_patterns() {
-        let filter =
-            PathFilter::new(&vec!["data".to_string(), "/entry/*/meta".to_string()]).unwrap();
+        let filter = PathFilter::new(&["data".to_string(), "/entry/*/meta".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(filter.is_match("/entry/run/meta"));
         assert!(filter.is_match("/entry/foo/data/bar"));
@@ -547,7 +546,7 @@ mod tests {
 
     #[test]
     fn path_filter_plain_string_matches_substring() {
-        let filter = PathFilter::new(&vec!["data".to_string()]).unwrap();
+        let filter = PathFilter::new(&["data".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(filter.is_match("/entry/metadata"));
         assert!(filter.is_match("/entry/foo/data/bar"));
@@ -556,21 +555,21 @@ mod tests {
 
     #[test]
     fn path_filter_plain_string_with_leading_slash_is_substring() {
-        let filter = PathFilter::new(&vec!["/entry/data".to_string()]).unwrap();
+        let filter = PathFilter::new(&["/entry/data".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(filter.is_match("/foo/entry/data"));
     }
 
     #[test]
     fn path_filter_glob_star_does_not_cross_segments() {
-        let filter = PathFilter::new(&vec!["/entry/*".to_string()]).unwrap();
+        let filter = PathFilter::new(&["/entry/*".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(!filter.is_match("/entry/data/foo"));
     }
 
     #[test]
     fn path_filter_glob_double_star_crosses_segments() {
-        let filter = PathFilter::new(&vec!["/entry/**/data".to_string()]).unwrap();
+        let filter = PathFilter::new(&["/entry/**/data".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(filter.is_match("/entry/foo/data"));
         assert!(filter.is_match("/entry/a/b/data"));
@@ -579,7 +578,7 @@ mod tests {
 
     #[test]
     fn path_filter_glob_question_mark_matches_single_char() {
-        let filter = PathFilter::new(&vec!["/entry/da?a".to_string()]).unwrap();
+        let filter = PathFilter::new(&["/entry/da?a".to_string()]).unwrap();
         assert!(filter.is_match("/entry/data"));
         assert!(filter.is_match("/entry/daaa"));
         assert!(!filter.is_match("/entry/daa"));

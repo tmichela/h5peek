@@ -1,6 +1,5 @@
-*.h5
+!*.h5
 !data/sample.h5
 /dist/
 .coverage
-*.lock
 target/
