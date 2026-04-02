@@ -296,11 +296,15 @@ fn dtype_description_from_desc(desc: &TypeDescriptor, dtype: &Datatype) -> Optio
                 Some(format!("{}-bit floating point{}", bits, suffix))
             }
         }
-        TypeDescriptor::Reference(r) => Some(match r {
-            hdf5::types::Reference::Object => "object reference".to_string(),
-            hdf5::types::Reference::Region => "region reference".to_string(),
-            _ => "reference".to_string(),
-        }),
+        TypeDescriptor::Reference(r) => {
+            #[allow(unreachable_patterns)]
+            let label = match r {
+                hdf5::types::Reference::Object => "object reference".to_string(),
+                hdf5::types::Reference::Region => "region reference".to_string(),
+                _ => "reference".to_string(),
+            };
+            Some(label)
+        }
         _ => None,
     }
 }
@@ -390,11 +394,15 @@ fn fmt_descriptor_short(desc: &TypeDescriptor, dtype: &Datatype) -> String {
         }
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
-        TypeDescriptor::Reference(r) => match r {
-            hdf5::types::Reference::Object => "obj-ref".to_string(),
-            hdf5::types::Reference::Region => "reg-ref".to_string(),
-            _ => "ref".to_string(),
-        },
+        TypeDescriptor::Reference(r) =>
+        {
+            #[allow(unreachable_patterns)]
+            match r {
+                hdf5::types::Reference::Object => "obj-ref".to_string(),
+                hdf5::types::Reference::Region => "reg-ref".to_string(),
+                _ => "ref".to_string(),
+            }
+        }
     }
 }
 
@@ -446,11 +454,15 @@ fn fmt_descriptor_short_nodefs(desc: &TypeDescriptor) -> String {
         }
         TypeDescriptor::VarLenAscii => "ASCII string".to_string(),
         TypeDescriptor::VarLenUnicode => "UTF-8 string".to_string(),
-        TypeDescriptor::Reference(r) => match r {
-            hdf5::types::Reference::Object => "obj-ref".to_string(),
-            hdf5::types::Reference::Region => "reg-ref".to_string(),
-            _ => "ref".to_string(),
-        },
+        TypeDescriptor::Reference(r) =>
+        {
+            #[allow(unreachable_patterns)]
+            match r {
+                hdf5::types::Reference::Object => "obj-ref".to_string(),
+                hdf5::types::Reference::Region => "reg-ref".to_string(),
+                _ => "ref".to_string(),
+            }
+        }
     }
 }
 
