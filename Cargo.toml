@@ -20,8 +20,8 @@ include = [
 anyhow = "1.0.100"
 clap = { version = "4.5.53", features = ["derive"] }
 colored = "3.0.0"
-hdf5 = { package = "hdf5-metno", version = "0.12.1" }
-hdf5-sys = { package = "hdf5-metno-sys", version = "0.11.1" }
+hdf5 = { package = "hdf5-metno", version = "0.12" }
+hdf5-sys = { package = "hdf5-metno-sys", version = "0.11" }
 ndarray = "0.17"
 pager = "0.16.1"
 regex = "1.12.2"
