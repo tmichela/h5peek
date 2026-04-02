@@ -87,11 +87,7 @@ impl<'a> TreePrintOptions<'a> {
     }
 }
 
-pub fn print_group_tree(
-    group: &Group,
-    name: &str,
-    opts: &TreePrintOptions<'_>,
-) -> Result<bool> {
+pub fn print_group_tree(group: &Group, name: &str, opts: &TreePrintOptions<'_>) -> Result<bool> {
     let mut printer = TreePrinter::new(
         opts.expand_attrs,
         opts.max_depth,

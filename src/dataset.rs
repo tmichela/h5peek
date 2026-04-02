@@ -252,7 +252,7 @@ fn print_selection_data(
             None
         }
         TypeDescriptor::Enum(enum_type) => {
-            print_selection_enum(ds, selection, &enum_type, display_mode)?;
+            print_selection_enum(ds, selection, enum_type, display_mode)?;
             None
         }
         TypeDescriptor::VarLenUnicode => {
