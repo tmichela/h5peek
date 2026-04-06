@@ -87,8 +87,47 @@ impl<'a> TreePrintOptions<'a> {
     }
 }
 
-pub fn print_group_tree(group: &Group, name: &str, opts: &TreePrintOptions<'_>) -> Result<bool> {
-    let mut printer = TreePrinter::new(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TreeNodeKind {
+    Group,
+    Dataset,
+    SoftLink,
+    ExternalLink,
+}
+
+#[derive(Clone, Debug)]
+pub enum TreeLink {
+    Soft { target: String },
+    External { file: String, path: String },
+}
+
+#[derive(Clone, Debug)]
+pub struct TreeAttribute {
+    pub name: String,
+    pub value: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct TreeNode {
+    pub kind: TreeNodeKind,
+    pub name: String,
+    pub path: String,
+    pub dtype: Option<String>,
+    pub shape: Option<Vec<usize>>,
+    pub attributes_count: Option<usize>,
+    pub attributes: Option<Vec<TreeAttribute>>,
+    pub children: Option<Vec<TreeNode>>,
+    pub children_count: Option<usize>,
+    pub hard_link_to: Option<String>,
+    pub link: Option<TreeLink>,
+}
+
+pub fn build_group_tree_model(
+    group: &Group,
+    name: &str,
+    opts: &TreePrintOptions<'_>,
+) -> Result<Option<TreeNode>> {
+    let mut builder = TreeBuilder::new(
         opts.expand_attrs,
         opts.max_depth,
         opts.sort_members,
@@ -96,7 +135,24 @@ pub fn print_group_tree(group: &Group, name: &str, opts: &TreePrintOptions<'_>) 
         &opts.fmt,
         opts.truncate_attr_strings,
     );
-    printer.print_node(Node::Group(group.clone()), name, "", true, 0, false)
+    let full_path = group.name();
+    builder.build_node(
+        Node::Group(group.clone()),
+        name.to_string(),
+        full_path,
+        0,
+        false,
+    )
+}
+
+pub fn print_group_tree(group: &Group, name: &str, opts: &TreePrintOptions<'_>) -> Result<bool> {
+    let tree = build_group_tree_model(group, name, opts)?;
+    if let Some(node) = tree {
+        print_tree(&node, "", true, 0)?;
+        Ok(true)
+    } else {
+        Ok(false)
+    }
 }
 
 enum Node {
@@ -104,7 +160,26 @@ enum Node {
     Dataset(Dataset),
 }
 
-struct TreePrinter<'a> {
+enum Child {
+    Node {
+        name: String,
+        node: Node,
+        full_path: String,
+    },
+    Soft {
+        name: String,
+        target: String,
+        full_path: String,
+    },
+    External {
+        name: String,
+        file: String,
+        path: String,
+        full_path: String,
+    },
+}
+
+struct TreeBuilder<'a> {
     expand_attrs: bool,
     max_depth: Option<usize>,
     sort_members: bool,
@@ -115,7 +190,7 @@ struct TreePrinter<'a> {
     filter_guard: HashSet<u64>,
 }
 
-impl<'a> TreePrinter<'a> {
+impl<'a> TreeBuilder<'a> {
     fn new(
         expand_attrs: bool,
         max_depth: Option<usize>,
@@ -136,46 +211,45 @@ impl<'a> TreePrinter<'a> {
         }
     }
 
-    fn print_node(
+    fn build_node(
         &mut self,
         node: Node,
-        name: &str,
-        prefix: &str,
-        is_last: bool,
+        name: String,
+        full_path: String,
         depth: usize,
         force_show: bool,
-    ) -> Result<bool> {
-        let connector = if depth == 0 {
-            ""
-        } else if is_last {
-            "└ "
-        } else {
-            "├ "
-        };
+    ) -> Result<Option<TreeNode>> {
         let filter = self.filter;
-
-        // Check for visited (Hard Link cycle detection)
-        // We need the ID of the object.
-        let (obj_id, full_path) = match &node {
+        let (obj_id, _) = match &node {
             Node::Group(g) => (g.id(), g.name()),
             Node::Dataset(d) => (d.id(), d.name()),
         };
 
         let matches_filter = filter.is_none_or(|f| f.is_match(&full_path));
-        let addr = utils::get_object_addr(obj_id).unwrap_or(0); // If fails (0), we just don't dedup, or risk infinite loop? 0 is likely invalid addr.
+        let addr = utils::get_object_addr(obj_id).unwrap_or(0);
 
-        // If we have seen this address before, prints reference
         if addr != 0 && self.visited.contains_key(&addr) {
             if filter.is_some() && !matches_filter && !force_show {
-                return Ok(false);
+                return Ok(None);
             }
-            let first_path = self.visited.get(&addr).unwrap();
-            let display_name = match &node {
-                Node::Group(_) => name.bright_blue().to_string(),
-                Node::Dataset(_) => name.bold().to_string(),
+            let first_path = self.visited.get(&addr).cloned().unwrap_or_default();
+            let kind = match &node {
+                Node::Group(_) => TreeNodeKind::Group,
+                Node::Dataset(_) => TreeNodeKind::Dataset,
             };
-            println!("{}{}{}  = {}", prefix, connector, display_name, first_path);
-            return Ok(true);
+            return Ok(Some(TreeNode {
+                kind,
+                name,
+                path: full_path,
+                dtype: None,
+                shape: None,
+                attributes_count: None,
+                attributes: None,
+                children: None,
+                children_count: None,
+                hard_link_to: Some(first_path),
+                link: None,
+            }));
         }
 
         let show_children = self.max_depth.is_none_or(|d| depth < d);
@@ -222,7 +296,7 @@ impl<'a> TreePrinter<'a> {
                             node: child_node,
                             full_path: child_full_path,
                         } => {
-                            let child_should_print = if show_all_children {
+                            let child_should_include = if show_all_children {
                                 true
                             } else if filter.is_some() {
                                 self.node_matches_or_descendant(&child_node, depth + 1)?
@@ -230,7 +304,7 @@ impl<'a> TreePrinter<'a> {
                                 true
                             };
 
-                            if child_should_print {
+                            if child_should_include {
                                 child_entries.push(Child::Node {
                                     name,
                                     node: child_node,
@@ -243,132 +317,132 @@ impl<'a> TreePrinter<'a> {
             }
         }
 
-        let should_print = if filter.is_some() && !force_show {
+        let should_include = if filter.is_some() && !force_show {
             matches_filter || !child_entries.is_empty()
         } else {
             true
         };
 
-        if !should_print {
-            return Ok(false);
+        if !should_include {
+            return Ok(None);
         }
 
         if addr != 0 {
-            self.visited.insert(addr, full_path);
+            self.visited.insert(addr, full_path.clone());
         }
 
-        let (display_name, info, n_attrs) = match &node {
+        let mut node_out = match &node {
             Node::Group(g) => {
-                let dname = name.bright_blue().to_string();
-                let mut info = String::new();
-                let n_attrs = g.attr_names()?.len();
-
-                if !show_children {
-                    let n = g.member_names()?.len();
-                    info = format!(" ({0} children)", n);
+                let (attributes_count, attributes) = collect_attributes_info(
+                    g,
+                    self.fmt,
+                    self.truncate_attr_strings,
+                    self.expand_attrs,
+                )?;
+                let children_count = if show_children {
+                    None
+                } else {
+                    Some(g.member_names()?.len())
+                };
+                TreeNode {
+                    kind: TreeNodeKind::Group,
+                    name,
+                    path: full_path,
+                    dtype: None,
+                    shape: None,
+                    attributes_count: Some(attributes_count),
+                    attributes,
+                    children: None,
+                    children_count,
+                    hard_link_to: None,
+                    link: None,
                 }
-                (dname, info, n_attrs)
             }
-            Node::Dataset(ds) => {
-                let dname = name.bold().to_string();
-                let dtype = utils::fmt_dtype(&ds.dtype()?);
-                let shape = utils::fmt_shape(&ds.shape());
-                let info = format!(" [{0}: {1}]", dtype, shape);
-                let n_attrs = ds.attr_names()?.len();
-                (dname, info, n_attrs)
+            Node::Dataset(d) => {
+                let (attributes_count, attributes) = collect_attributes_info(
+                    d,
+                    self.fmt,
+                    self.truncate_attr_strings,
+                    self.expand_attrs,
+                )?;
+                TreeNode {
+                    kind: TreeNodeKind::Dataset,
+                    name,
+                    path: full_path,
+                    dtype: Some(utils::fmt_dtype(&d.dtype()?)),
+                    shape: Some(d.shape()),
+                    attributes_count: Some(attributes_count),
+                    attributes,
+                    children: None,
+                    children_count: None,
+                    hard_link_to: None,
+                    link: None,
+                }
             }
         };
-
-        let mut final_info = info;
-        if n_attrs > 0 && !self.expand_attrs {
-            final_info.push_str(&format!(" ({} attributes)", n_attrs));
-        }
-
-        println!("{}{}{}{}", prefix, connector, display_name, final_info);
-
-        let child_prefix_base = if depth == 0 {
-            ""
-        } else if is_last {
-            "  "
-        } else {
-            "│ "
-        };
-        let child_prefix = format!("{}{}", prefix, child_prefix_base);
-
-        if self.expand_attrs && n_attrs > 0 {
-            match &node {
-                Node::Group(g) => {
-                    print_attrs(g, &child_prefix, self.fmt, self.truncate_attr_strings)?
-                }
-                Node::Dataset(d) => {
-                    print_attrs(d, &child_prefix, self.fmt, self.truncate_attr_strings)?
-                }
-            }
-        }
 
         if let Node::Group(_) = node {
             if show_children {
-                let n_members = child_entries.len();
-                for (i, entry) in child_entries.into_iter().enumerate() {
-                    let is_last_child = i == n_members - 1;
-
-                    match entry {
+                let mut children = Vec::new();
+                for child in child_entries {
+                    match child {
                         Child::Soft {
-                            name: member_name,
+                            name,
                             target,
-                            ..
-                        } => {
-                            let connector = if is_last_child { "└" } else { "├" };
-                            println!(
-                                "{}{}{} -> {}",
-                                child_prefix,
-                                connector,
-                                member_name.bright_magenta(),
-                                target
-                            );
-                            continue;
-                        }
+                            full_path,
+                        } => children.push(TreeNode {
+                            kind: TreeNodeKind::SoftLink,
+                            name,
+                            path: full_path,
+                            dtype: None,
+                            shape: None,
+                            attributes_count: None,
+                            attributes: None,
+                            children: None,
+                            children_count: None,
+                            hard_link_to: None,
+                            link: Some(TreeLink::Soft { target }),
+                        }),
                         Child::External {
-                            name: member_name,
+                            name,
                             file,
                             path,
-                            ..
-                        } => {
-                            let connector = if is_last_child { "└" } else { "├" };
-                            let display_target = if path.starts_with('/') {
-                                format!("{}{}", file, path)
-                            } else {
-                                format!("{}/{}", file, path)
-                            };
-                            println!(
-                                "{}{}{} -> {}",
-                                child_prefix,
-                                connector,
-                                member_name.bright_magenta(),
-                                display_target
-                            );
-                            continue;
-                        }
+                            full_path,
+                        } => children.push(TreeNode {
+                            kind: TreeNodeKind::ExternalLink,
+                            name,
+                            path: full_path,
+                            dtype: None,
+                            shape: None,
+                            attributes_count: None,
+                            attributes: None,
+                            children: None,
+                            children_count: None,
+                            hard_link_to: None,
+                            link: Some(TreeLink::External { file, path }),
+                        }),
                         Child::Node {
-                            name: member_name,
-                            node: child_node,
-                            ..
+                            name,
+                            node,
+                            full_path,
                         } => {
-                            self.print_node(
-                                child_node,
-                                &member_name,
-                                &child_prefix,
-                                is_last_child,
+                            if let Some(child_node) = self.build_node(
+                                node,
+                                name,
+                                full_path,
                                 depth + 1,
                                 show_all_children,
-                            )?;
+                            )? {
+                                children.push(child_node);
+                            }
                         }
-                    };
+                    }
                 }
+                node_out.children = Some(children);
             }
         }
 
-        Ok(true)
+        Ok(Some(node_out))
     }
 
     fn node_matches_or_descendant(&mut self, node: &Node, depth: usize) -> Result<bool> {
@@ -445,7 +519,7 @@ impl<'a> TreePrinter<'a> {
 
         let mut children = Vec::with_capacity(members.len());
         for member_name in members {
-            let child_full_path = join_hdf5_path(parent_path, &member_name);
+            let child_full_path = utils::join_hdf5_path(parent_path, &member_name);
             match utils::get_link_info(group.id(), &member_name) {
                 utils::LinkInfo::Soft(target) => {
                     children.push(Child::Soft {
@@ -486,49 +560,132 @@ impl<'a> TreePrinter<'a> {
     }
 }
 
-fn print_attrs(
+fn collect_attributes_info(
     obj: &hdf5::Location,
-    prefix: &str,
     fmt: &utils::NumFormat,
     truncate_attr_strings: bool,
-) -> Result<()> {
-    let attrs = obj.attr_names()?;
-    let n = attrs.len();
-    println!("{}│ {} attributes:", prefix, n.to_string().yellow());
+    include: bool,
+) -> Result<(usize, Option<Vec<TreeAttribute>>)> {
+    let names = obj.attr_names()?;
+    let count = names.len();
+    if !include {
+        return Ok((count, None));
+    }
 
-    for name in attrs {
+    let mut attrs = Vec::with_capacity(count);
+    for name in names {
         let attr = obj.attr(&name)?;
         let value = utils::format_attribute_value(&attr, fmt, truncate_attr_strings);
-        println!("{}│  {}: {}", prefix, name, value);
+        attrs.push(TreeAttribute { name, value });
     }
-    Ok(())
+    Ok((count, Some(attrs)))
 }
 
-fn join_hdf5_path(parent: &str, child: &str) -> String {
-    if parent == "/" {
-        format!("/{}", child)
+fn print_tree(node: &TreeNode, prefix: &str, is_last: bool, depth: usize) -> Result<()> {
+    let connector = if depth == 0 {
+        ""
+    } else if is_last {
+        "└ "
     } else {
-        format!("{}/{}", parent.trim_end_matches('/'), child)
-    }
-}
+        "├ "
+    };
 
-enum Child {
-    Node {
-        name: String,
-        node: Node,
-        full_path: String,
-    },
-    Soft {
-        name: String,
-        target: String,
-        full_path: String,
-    },
-    External {
-        name: String,
-        file: String,
-        path: String,
-        full_path: String,
-    },
+    match node.kind {
+        TreeNodeKind::SoftLink | TreeNodeKind::ExternalLink => {
+            let connector = if depth == 0 {
+                ""
+            } else if is_last {
+                "└"
+            } else {
+                "├"
+            };
+            let target = match node.link.as_ref() {
+                Some(TreeLink::Soft { target }) => target.clone(),
+                Some(TreeLink::External { file, path }) => {
+                    if path.starts_with('/') {
+                        format!("{}{}", file, path)
+                    } else {
+                        format!("{}/{}", file, path)
+                    }
+                }
+                None => String::new(),
+            };
+            println!(
+                "{}{}{} -> {}",
+                prefix,
+                connector,
+                node.name.bright_magenta(),
+                target
+            );
+            return Ok(());
+        }
+        _ => {}
+    }
+
+    if let Some(target) = node.hard_link_to.as_ref() {
+        let display_name = match node.kind {
+            TreeNodeKind::Group => node.name.bright_blue().to_string(),
+            TreeNodeKind::Dataset => node.name.bold().to_string(),
+            _ => node.name.clone(),
+        };
+        println!("{}{}{}  = {}", prefix, connector, display_name, target);
+        return Ok(());
+    }
+
+    let mut info = String::new();
+    let display_name = match node.kind {
+        TreeNodeKind::Group => {
+            if let Some(n_children) = node.children_count {
+                info = format!(" ({0} children)", n_children);
+            }
+            node.name.bright_blue().to_string()
+        }
+        TreeNodeKind::Dataset => {
+            if let (Some(dtype), Some(shape)) = (node.dtype.as_ref(), node.shape.as_ref()) {
+                info = format!(" [{0}: {1}]", dtype, utils::fmt_shape(shape));
+            }
+            node.name.bold().to_string()
+        }
+        _ => node.name.clone(),
+    };
+
+    let mut final_info = info;
+    if let Some(n_attrs) = node.attributes_count {
+        if n_attrs > 0 && node.attributes.is_none() {
+            final_info.push_str(&format!(" ({} attributes)", n_attrs));
+        }
+    }
+
+    println!("{}{}{}{}", prefix, connector, display_name, final_info);
+
+    let child_prefix_base = if depth == 0 {
+        ""
+    } else if is_last {
+        "  "
+    } else {
+        "│ "
+    };
+    let child_prefix = format!("{}{}", prefix, child_prefix_base);
+
+    if let Some(attrs) = node.attributes.as_ref() {
+        if node.attributes_count.unwrap_or(0) > 0 {
+            let n = attrs.len();
+            println!("{}│ {} attributes:", child_prefix, n.to_string().yellow());
+            for attr in attrs {
+                println!("{}│  {}: {}", child_prefix, attr.name, attr.value);
+            }
+        }
+    }
+
+    if let Some(children) = node.children.as_ref() {
+        let n_members = children.len();
+        for (i, child) in children.iter().enumerate() {
+            let is_last_child = i == n_members - 1;
+            print_tree(child, &child_prefix, is_last_child, depth + 1)?;
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
