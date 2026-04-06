@@ -445,7 +445,7 @@ impl<'a> TreePrinter<'a> {
 
         let mut children = Vec::with_capacity(members.len());
         for member_name in members {
-            let child_full_path = join_hdf5_path(parent_path, &member_name);
+            let child_full_path = utils::join_hdf5_path(parent_path, &member_name);
             match utils::get_link_info(group.id(), &member_name) {
                 utils::LinkInfo::Soft(target) => {
                     children.push(Child::Soft {
@@ -502,14 +502,6 @@ fn print_attrs(
         println!("{}│  {}: {}", prefix, name, value);
     }
     Ok(())
-}
-
-fn join_hdf5_path(parent: &str, child: &str) -> String {
-    if parent == "/" {
-        format!("/{}", child)
-    } else {
-        format!("{}/{}", parent.trim_end_matches('/'), child)
-    }
 }
 
 enum Child {

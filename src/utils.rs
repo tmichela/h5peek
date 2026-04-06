@@ -198,6 +198,38 @@ pub fn fmt_dtype(dtype: &Datatype) -> String {
     }
 }
 
+pub fn elem_count_u64(shape: &[usize]) -> Option<u64> {
+    if shape.is_empty() {
+        Some(1u64)
+    } else {
+        shape
+            .iter()
+            .try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
+    }
+}
+
+pub fn descriptor_has_vlen(desc: &TypeDescriptor) -> bool {
+    match desc {
+        TypeDescriptor::VarLenArray(_)
+        | TypeDescriptor::VarLenAscii
+        | TypeDescriptor::VarLenUnicode => true,
+        TypeDescriptor::FixedArray(inner, _) => descriptor_has_vlen(inner),
+        TypeDescriptor::Compound(compound) => compound
+            .fields
+            .iter()
+            .any(|field| descriptor_has_vlen(&field.ty)),
+        _ => false,
+    }
+}
+
+pub fn join_hdf5_path(parent: &str, child: &str) -> String {
+    if parent == "/" {
+        format!("/{}", child)
+    } else {
+        format!("{}/{}", parent.trim_end_matches('/'), child)
+    }
+}
+
 fn fmt_dtype_fallback(dtype: &Datatype) -> String {
     unsafe {
         let id = dtype.id();

@@ -3,7 +3,6 @@ use crate::tree::PathFilter;
 use crate::utils;
 use anyhow::{anyhow, Result};
 use hdf5::plist::dataset_create::Layout;
-use hdf5::types::TypeDescriptor;
 use hdf5::{Dataset, Group};
 use natord::compare;
 use serde::Serialize;
@@ -169,12 +168,12 @@ pub fn build_dataset_info(
             .map_err(|e| anyhow!("Error parsing slice: {}", e))?;
     }
 
-    let elements = elem_count_u64(&shape);
+    let elements = utils::elem_count_u64(&shape);
     let storage_bytes = ds.storage_size();
     let logical_size_bytes = desc
         .as_ref()
         .and_then(|desc| {
-            if descriptor_has_vlen(desc) {
+            if utils::descriptor_has_vlen(desc) {
                 None
             } else {
                 elements.and_then(|count| count.checked_mul(dtype.size() as u64))
@@ -569,7 +568,7 @@ impl<'a> TreeJsonBuilder<'a> {
 
         let mut children = Vec::with_capacity(members.len());
         for member_name in members {
-            let child_full_path = join_hdf5_path(parent_path, &member_name);
+            let child_full_path = utils::join_hdf5_path(parent_path, &member_name);
             match utils::get_link_info(group.id(), &member_name) {
                 utils::LinkInfo::Soft(target) => {
                     children.push(Child::Soft {
@@ -618,14 +617,6 @@ fn name_from_path(path: &str) -> String {
     }
 }
 
-fn join_hdf5_path(parent: &str, child: &str) -> String {
-    if parent == "/" {
-        format!("/{}", child)
-    } else {
-        format!("{}/{}", parent.trim_end_matches('/'), child)
-    }
-}
-
 fn collect_attributes_info(
     obj: &hdf5::Location,
     fmt: &utils::NumFormat,
@@ -645,30 +636,6 @@ fn collect_attributes_info(
         attrs.push(JsonAttribute { name, value });
     }
     Ok((count, Some(attrs)))
-}
-
-fn elem_count_u64(shape: &[usize]) -> Option<u64> {
-    if shape.is_empty() {
-        Some(1u64)
-    } else {
-        shape
-            .iter()
-            .try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
-    }
-}
-
-fn descriptor_has_vlen(desc: &TypeDescriptor) -> bool {
-    match desc {
-        TypeDescriptor::VarLenArray(_)
-        | TypeDescriptor::VarLenAscii
-        | TypeDescriptor::VarLenUnicode => true,
-        TypeDescriptor::FixedArray(inner, _) => descriptor_has_vlen(inner),
-        TypeDescriptor::Compound(compound) => compound
-            .fields
-            .iter()
-            .any(|field| descriptor_has_vlen(&field.ty)),
-        _ => false,
-    }
 }
 
 fn maxshape_if_different(ds: &Dataset, shape: &[usize]) -> Result<Option<Vec<Option<usize>>>> {

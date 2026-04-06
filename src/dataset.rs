@@ -78,7 +78,7 @@ fn print_dataset_summary(
     println!("      dtype: {}", utils::fmt_dtype(dtype));
     println!("      shape: {}", utils::fmt_shape(shape));
 
-    let elem_count = elem_count_u64(shape);
+    let elem_count = utils::elem_count_u64(shape);
     match elem_count {
         Some(count) => println!("   elements: {}", utils::fmt_u64(count, scalar_fmt)),
         None => println!("   elements: (too large)"),
@@ -87,7 +87,7 @@ fn print_dataset_summary(
     println!("    storage: {}", utils::fmt_bytes(storage_bytes));
 
     if let Some(desc) = desc {
-        if !descriptor_has_vlen(desc) {
+        if !utils::descriptor_has_vlen(desc) {
             match elem_count.and_then(|count| count.checked_mul(dtype.size() as u64)) {
                 Some(logical_bytes) => {
                     println!("logical size: {}", utils::fmt_bytes(logical_bytes));
@@ -185,16 +185,6 @@ fn print_dataset_attrs(
         );
     }
     Ok(())
-}
-
-fn elem_count_u64(shape: &[usize]) -> Option<u64> {
-    if shape.is_empty() {
-        Some(1u64)
-    } else {
-        shape
-            .iter()
-            .try_fold(1u64, |acc, &d| acc.checked_mul(d as u64))
-    }
 }
 
 fn print_selection_data(
@@ -814,21 +804,7 @@ fn compound_has_vlen(compound: &CompoundType) -> bool {
     compound
         .fields
         .iter()
-        .any(|field| descriptor_has_vlen(&field.ty))
-}
-
-fn descriptor_has_vlen(desc: &TypeDescriptor) -> bool {
-    match desc {
-        TypeDescriptor::VarLenArray(_)
-        | TypeDescriptor::VarLenAscii
-        | TypeDescriptor::VarLenUnicode => true,
-        TypeDescriptor::FixedArray(inner, _) => descriptor_has_vlen(inner),
-        TypeDescriptor::Compound(compound) => compound
-            .fields
-            .iter()
-            .any(|field| descriptor_has_vlen(&field.ty)),
-        _ => false,
-    }
+        .any(|field| utils::descriptor_has_vlen(&field.ty))
 }
 
 fn format_index(flat: usize, shape: &[usize]) -> String {
