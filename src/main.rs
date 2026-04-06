@@ -221,14 +221,14 @@ fn run_json(args: Args) -> Result<()> {
             emit_json_error("Slicing is only allowed for datasets", 1, pretty);
         }
 
-        let mut tree_opts = json_output::TreeJsonOptions::new(scalar_format);
+        let mut tree_opts = tree::TreePrintOptions::new(scalar_format);
         tree_opts.expand_attrs = args.attrs;
         tree_opts.max_depth = args.depth;
         tree_opts.sort_members = !args.unsorted;
         tree_opts.filter = filter.as_ref();
         tree_opts.truncate_attr_strings = truncate_attr_strings;
 
-        let tree = match json_output::build_group_tree(&group, &tree_opts) {
+        let tree = match json_output::build_group_tree_json(&group, &tree_opts) {
             Ok(tree) => tree,
             Err(e) => emit_json_error(e.to_string(), 1, pretty),
         };

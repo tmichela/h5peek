@@ -686,9 +686,7 @@ fn json_hard_link_outputs_deduped_entries() {
         for child in children {
             match child["kind"].as_str().unwrap() {
                 "dataset" => dataset_paths.push(child["path"].as_str().unwrap().to_string()),
-                "hard_link" => {
-                    hard_links.push(child["hard_link_to"].as_str().unwrap().to_string())
-                }
+                "hard_link" => hard_links.push(child["hard_link_to"].as_str().unwrap().to_string()),
                 _ => {}
             }
         }
