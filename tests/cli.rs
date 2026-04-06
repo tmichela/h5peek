@@ -2,6 +2,7 @@ use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
 use predicates::prelude::*;
 use predicates::str::{contains, is_match};
+use serde_json::Value;
 
 mod common;
 use common::{
@@ -470,5 +471,106 @@ fn tree_output_has_no_tabs() {
             .assert()
             .success()
             .stdout(contains("\t").not());
+    });
+}
+
+#[test]
+fn json_group_output_includes_tree() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        let assert = base_cmd().arg(&path).arg("--json").assert().success();
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        assert_eq!(value["kind"], "group");
+        assert!(value["tree"].is_object());
+    });
+}
+
+#[test]
+fn json_dataset_output_is_metadata_only() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("/arrays_1d/int32")
+            .arg("--json")
+            .assert()
+            .success();
+
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        assert_eq!(value["kind"], "dataset");
+        assert_eq!(value["dataset"]["data_included"].as_bool(), Some(false));
+        assert!(value["dataset"].get("data").is_none());
+    });
+}
+
+#[test]
+fn json_pretty_output_is_valid() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("--json-pretty")
+            .assert()
+            .success();
+
+        let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
+        assert!(stdout.contains('\n'));
+        let value: Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(value["kind"], "group");
+    });
+}
+
+#[test]
+fn json_error_output_on_missing_object() {
+    with_hdf5_lock(|| {
+        let path = sample_file_path();
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("/no_such_object")
+            .arg("--json")
+            .assert()
+            .failure();
+
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        assert!(value.get("error").is_some());
+        assert_eq!(value["code"].as_i64(), Some(1));
+    });
+}
+
+#[test]
+fn json_includes_attributes_when_requested() {
+    with_hdf5_lock(|| {
+        let path = temp_h5_path("json_attrs");
+
+        {
+            let file = hdf5::File::create(&path).unwrap();
+            let ds = file
+                .new_dataset_builder()
+                .with_data(&[1_i32])
+                .create("d")
+                .unwrap();
+            let attr = ds.new_attr::<i32>().shape(()).create("answer").unwrap();
+            attr.as_writer().write_scalar(&42).unwrap();
+            file.flush().unwrap();
+            drop(file);
+        }
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("/d")
+            .arg("--json")
+            .arg("--attrs")
+            .assert()
+            .success();
+
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        let attrs = value["dataset"]["attributes"].as_array().unwrap();
+        assert_eq!(attrs.len(), 1);
+
+        let _ = std::fs::remove_file(path);
     });
 }

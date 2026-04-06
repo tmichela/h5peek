@@ -7,6 +7,7 @@ use std::process::exit;
 mod array_format;
 mod completer;
 mod dataset;
+mod json_output;
 mod plot;
 mod slicing;
 mod tree;
@@ -62,6 +63,14 @@ struct Args {
     #[arg(long, action = ArgAction::SetTrue)]
     no_attr_truncate: bool,
 
+    /// Emit JSON output instead of text
+    #[arg(long, action = ArgAction::SetTrue)]
+    json: bool,
+
+    /// Pretty-print JSON output (implies --json)
+    #[arg(long, action = ArgAction::SetTrue)]
+    json_pretty: bool,
+
     /// Color output: auto, always, or never
     #[arg(long, value_enum, default_value_t = ColorMode::Auto)]
     color: ColorMode,
@@ -114,6 +123,9 @@ fn resolve_pager_command(args: &Args) -> Option<String> {
 fn main() -> Result<()> {
     install_broken_pipe_handler();
     let args = Args::parse();
+    if json_enabled(&args) {
+        return run_json(args);
+    }
     run(args)
 }
 
@@ -144,6 +156,10 @@ fn run(args: Args) -> Result<()> {
     )
 }
 
+fn json_enabled(args: &Args) -> bool {
+    args.json || args.json_pretty
+}
+
 fn validate_file(path: &PathBuf) {
     if !path.exists() {
         eprintln!("File not found: {:?}", path);
@@ -153,6 +169,140 @@ fn validate_file(path: &PathBuf) {
         eprintln!("Not a file: {:?}", path);
         exit(2);
     }
+}
+
+fn emit_json_error(message: impl Into<String>, code: i32, pretty: bool) -> ! {
+    let err = json_output::JsonErrorOutput {
+        error: message.into(),
+        code,
+    };
+    if let Err(write_err) = json_output::write_json(&err, pretty) {
+        eprintln!("Failed to write JSON error: {}", write_err);
+    }
+    exit(code);
+}
+
+fn run_json(args: Args) -> Result<()> {
+    let pretty = args.json_pretty;
+    if !args.file.exists() {
+        emit_json_error(format!("File not found: {:?}", args.file), 2, pretty);
+    }
+    if !args.file.is_file() {
+        emit_json_error(format!("Not a file: {:?}", args.file), 2, pretty);
+    }
+    if args.path.as_deref() == Some("-") {
+        emit_json_error("Interactive mode is not supported with --json", 1, pretty);
+    }
+
+    let file = match hdf5::File::open(&args.file) {
+        Ok(f) => f,
+        Err(e) => {
+            emit_json_error(format!("Failed to open HDF5 file: {}", e), 1, pretty);
+        }
+    };
+
+    let path_str = match args.path.as_deref() {
+        Some(p) => p.to_string(),
+        None => "/".to_string(),
+    };
+
+    let filter = match build_filter(&args) {
+        Ok(filter) => filter,
+        Err(e) => {
+            emit_json_error(e.to_string(), 1, pretty);
+        }
+    };
+
+    let scalar_format = utils::NumFormat::scalar();
+    let truncate_attr_strings = !args.no_attr_truncate;
+
+    let output = if let Ok(group) = file.group(&path_str) {
+        if args.slice.is_some() {
+            emit_json_error("Slicing is only allowed for datasets", 1, pretty);
+        }
+
+        let mut tree_opts = json_output::TreeJsonOptions::new(scalar_format);
+        tree_opts.expand_attrs = args.attrs;
+        tree_opts.max_depth = args.depth;
+        tree_opts.sort_members = !args.unsorted;
+        tree_opts.filter = filter.as_ref();
+        tree_opts.truncate_attr_strings = truncate_attr_strings;
+
+        let tree = match json_output::build_group_tree(&group, &tree_opts) {
+            Ok(tree) => tree,
+            Err(e) => emit_json_error(e.to_string(), 1, pretty),
+        };
+
+        let mut out = json_output::JsonOutput {
+            kind: json_output::OutputKind::Group,
+            file: format!("{}", args.file.display()),
+            path: group.name(),
+            matched: None,
+            warnings: Vec::new(),
+            tree,
+            dataset: None,
+        };
+
+        if filter.is_some() {
+            if out.tree.is_some() {
+                out.matched = Some(true);
+            } else {
+                out.matched = Some(false);
+                out.warnings.push("No paths matched the filter".to_string());
+            }
+        }
+        out
+    } else if let Ok(ds) = file.dataset(&path_str) {
+        if let Some(filter) = filter.as_ref() {
+            if !filter.is_match(&ds.name()) {
+                let out = json_output::JsonOutput {
+                    kind: json_output::OutputKind::Dataset,
+                    file: format!("{}", args.file.display()),
+                    path: ds.name(),
+                    matched: Some(false),
+                    warnings: vec!["No paths matched the filter".to_string()],
+                    tree: None,
+                    dataset: None,
+                };
+                json_output::write_json(&out, pretty)?;
+                return Ok(());
+            }
+        }
+
+        let dataset = match json_output::build_dataset_info(
+            &ds,
+            &scalar_format,
+            truncate_attr_strings,
+            args.attrs,
+            args.slice.as_deref(),
+        ) {
+            Ok(info) => info,
+            Err(e) => emit_json_error(e.to_string(), 1, pretty),
+        };
+
+        json_output::JsonOutput {
+            kind: json_output::OutputKind::Dataset,
+            file: format!("{}", args.file.display()),
+            path: ds.name(),
+            matched: filter.as_ref().map(|_| true),
+            warnings: Vec::new(),
+            tree: None,
+            dataset: Some(dataset),
+        }
+    } else {
+        if file.link_exists(&path_str) {
+            emit_json_error(
+                format!("Object exists but is not a group or dataset: {}", path_str),
+                1,
+                pretty,
+            );
+        } else {
+            emit_json_error(format!("Object not found: {}", path_str), 1, pretty);
+        }
+    };
+
+    json_output::write_json(&output, pretty)?;
+    Ok(())
 }
 
 fn resolve_target_path(args: &Args) -> Result<String> {
