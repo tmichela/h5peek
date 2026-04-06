@@ -28,6 +28,20 @@ fn with_hdf5_lock(f: impl FnOnce()) {
     f();
 }
 
+fn tree_contains_path(node: &Value, target: &str) -> bool {
+    if node.get("path").and_then(Value::as_str) == Some(target) {
+        return true;
+    }
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            if tree_contains_path(child, target) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[test]
 fn tree_view_shows_group_and_dataset() {
     with_hdf5_lock(|| {
@@ -570,6 +584,120 @@ fn json_includes_attributes_when_requested() {
         let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
         let attrs = value["dataset"]["attributes"].as_array().unwrap();
         assert_eq!(attrs.len(), 1);
+
+        let _ = std::fs::remove_file(path);
+    });
+}
+
+#[test]
+fn json_tree_uses_natural_sort() {
+    with_hdf5_lock(|| {
+        let path = temp_h5_path("json_natural_sort");
+        {
+            let file = hdf5::File::create(&path).unwrap();
+            let group = file.create_group("root").unwrap();
+            group.create_group("group_2asdf").unwrap();
+            group.create_group("group_10asdf").unwrap();
+            group.create_group("group_1asdf").unwrap();
+            file.flush().unwrap();
+        }
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("/root")
+            .arg("--json")
+            .assert()
+            .success();
+
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        let children = value["tree"]["children"].as_array().unwrap();
+        let names: Vec<&str> = children
+            .iter()
+            .map(|child| child["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(names, vec!["group_1asdf", "group_2asdf", "group_10asdf"]);
+
+        let _ = std::fs::remove_file(path);
+    });
+}
+
+#[test]
+fn json_filter_includes_descendant_paths() {
+    with_hdf5_lock(|| {
+        let path = temp_h5_path("json_filter_descendant");
+        {
+            let file = hdf5::File::create(&path).unwrap();
+            let root = file.create_group("root").unwrap();
+            let level1 = root.create_group("level1").unwrap();
+            level1
+                .new_dataset_builder()
+                .with_data(&[1_i32])
+                .create("target")
+                .unwrap();
+            file.flush().unwrap();
+        }
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("/root")
+            .arg("--json")
+            .arg("--filter")
+            .arg("target")
+            .assert()
+            .success();
+
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        let tree = &value["tree"];
+        assert!(tree_contains_path(tree, "/root"));
+        assert!(tree_contains_path(tree, "/root/level1/target"));
+
+        let _ = std::fs::remove_file(path);
+    });
+}
+
+#[test]
+fn json_hard_link_outputs_deduped_entries() {
+    with_hdf5_lock(|| {
+        let path = temp_h5_path("json_hard_link");
+        {
+            let file = hdf5::File::create(&path).unwrap();
+            let group = file.create_group("group").unwrap();
+            group
+                .new_dataset_builder()
+                .with_data(&[1_i32])
+                .create("var")
+                .unwrap();
+            group.link_hard("var", "hard1").unwrap();
+            group.link_hard("var", "hard2").unwrap();
+            file.flush().unwrap();
+        }
+
+        let assert = base_cmd()
+            .arg(&path)
+            .arg("/group")
+            .arg("--json")
+            .assert()
+            .success();
+
+        let value: Value = serde_json::from_slice(&assert.get_output().stdout).unwrap();
+        let children = value["tree"]["children"].as_array().unwrap();
+        let mut dataset_paths = Vec::new();
+        let mut hard_links = Vec::new();
+        for child in children {
+            match child["kind"].as_str().unwrap() {
+                "dataset" => dataset_paths.push(child["path"].as_str().unwrap().to_string()),
+                "hard_link" => {
+                    hard_links.push(child["hard_link_to"].as_str().unwrap().to_string())
+                }
+                _ => {}
+            }
+        }
+
+        assert_eq!(dataset_paths.len(), 1);
+        assert!(!hard_links.is_empty());
+        for link in hard_links {
+            assert_eq!(link, dataset_paths[0]);
+        }
 
         let _ = std::fs::remove_file(path);
     });
