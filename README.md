@@ -1,16 +1,25 @@
 # h5peek
 
-A command-line tool for inspecting HDF5 files, written in Rust. It provides a colored tree view of the file structure, detailed datatype information, and interactive path completion.
-This started as a re-implementation of the Python [h5glance](https://pypi.org/project/h5glance/) application, but might derive from it in future.
+A command-line tool for inspecting HDF5 files, written in Rust. It provides a
+colored tree view of the file structure, detailed dataset previews, inline
+plots for 1D numeric arrays, JSON output for automation, and interactive path
+completion.
+This started as a re-implementation of the Python
+[h5glance](https://pypi.org/project/h5glance/) application, but might derive
+from it in future.
+
+![Colored tree view from h5peek](docs/figures/tree-hero.png)
 
 ## Features
 
 *   **Tree View**: Visualize groups, datasets, and links hierarchy.
-*   **Rich Details**: Displays shapes, and detailed types (e.g., `64-bit floating point`, `compound (x: int32, y: float64)`).
+*   **Rich Details**: Displays shapes, storage, layout, compression metadata, and detailed types.
+*   **Inline Plots**: Render quick terminal plots for 1D numeric datasets.
+*   **JSON Output**: Emit machine-readable metadata with `--json` or `--json-pretty`.
 *   **Colors**: Semantic coloring for groups, datasets, and links (respects `NO_COLOR`).
 *   **Interactive Mode**: Tab-completion for exploring paths deep inside files.
 *   **Link Handling**: Correctly identifies and displays Soft and External links.
-*   **Attribute Inspection**: View attribute names, types, and shapes.
+*   **Attribute Inspection**: View attribute names and formatted values.
 
 ## Installation
 
@@ -40,7 +49,20 @@ h5peek file.h5 --depth 2
 
 # Preserve original (unsorted) member order
 h5peek file.h5 --unsorted
+
+# Emit JSON metadata
+h5peek file.h5 /group/dataset --json-pretty
 ```
+
+## Examples
+
+### Dataset Preview
+
+![Dataset preview with inline plot](docs/figures/dataset-preview.png)
+
+### JSON Output
+
+![Side-by-side text and JSON output](docs/figures/json-output.png)
 
 ## Dev quickstart
 
